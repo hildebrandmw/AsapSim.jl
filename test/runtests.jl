@@ -5,5 +5,8 @@ else
     using Test
 end
 
+import DataStructures
+
 # write your own tests here
-@test 1 == 2
+include("fifo.jl")
+include("assembler/macro.jl")
