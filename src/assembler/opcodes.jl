@@ -58,13 +58,20 @@ const instructions_stall = (
     :STALL,
 )
 
+# Special pseudo instructions that still need special treatment from the
+# assembler.
+const instructions_pseudo = (
+    :END_RPT
+)
+
 const opcodes = union(
     instructions_3operand, 
     instructions_2operand, 
     instructions_1operand,
     instructions_0operand,
     instructions_branch,
-    instructions_stall
+    instructions_stall,
+    instructions_pseudo,
 )
 
 
@@ -139,11 +146,15 @@ const DestinationSymbols = (
 # The pseudo-assembly will be parsed directly into these intermediate
 # instructions, which will then be analyzed to emit the final vector of
 # AsapInstructions.
-struct AsapIntermediate
+mutable struct AsapIntermediate
     op   :: Symbol
     args :: Vector{Any}
 
-    label :: Union{Symbol,Void}
+    # The label assigned to this instruction
+    label       :: Union{Symbol,Void}
+    # The end-address if this is a repeat instruction
+    repeat_start :: Union{Symbol, Void}
+    repeat_end  :: Union{Symbol,Void}
 
     # Store the file and line numbers to provide better error messages while
     # converting the intermediate instructions into full instructions.
@@ -152,128 +163,214 @@ struct AsapIntermediate
 end
 
 
-struct InstructionOptions
-    # Number of no-ops to put after this instruction.
-    nops::UInt8
-    # Set the "jump" flag for branches
-    jump::Bool
-    # conditional execution
-    csx::Bool
-    cxt::Bool
-    cxf::Bool
-    # Index of the conditional register to use.
-    cx_index::UInt8
-    # Options for writeback to dmem. If "true", double-write will happen
-    dw::Bool
+
+# -- Removed in favor of storing these directly in the instruction type to
+# avoid a level of wrapping.
+# struct InstructionOptions
+#     # Number of no-ops to put after this instruction.
+#     nops::UInt8
+#     # Set the "jump" flag for branches
+#     jump::Bool
+#     # conditional execution
+#     csx::Bool
+#     cxt::Bool
+#     cxf::Bool
+#     # Index of the conditional register to use.
+#     cx_index::UInt8
+#     # Options for writeback to dmem. If "true", double-write will happen
+#     dw::Bool
+# end
+# InstructionOptions() = InstructionOptions(
+#     zero(UInt8),
+#     false,
+#     false,
+#     false,
+#     false,
+#     zero(UInt8),
+#     false,
+# )
+# 
+# 
+# function getoptions(args::Vector{Any})
+#     # Set defaults
+#     nops        = zero(UInt8)
+#     jump        = false
+#     csx         = false
+#     cxt         = false
+#     cxf         = false
+#     cx_index    = zero(UInt8)
+#     dw          = false
+# 
+#     # Check for nops  
+#     for (i,nop) in enumerate((:nop1, :nop2, :nop3))
+#         if nop in args
+#             nops = UInt8(i) 
+#         end
+#     end
+#     # Check for jump
+#     if :j in args
+#         jump = true
+#     end
+#     # Check for conditional execution
+#     :csx0 in args && (csx = true; cx_index = UInt8(0))
+#     :csx1 in args && (csx = true; cx_index = UInt8(1))
+#     :cxt0 in args && (cxt = true; cx_index = UInt8(0))
+#     :cxt1 in args && (cxt = true; cx_index = UInt8(1))
+#     :cxf0 in args && (cxf = true; cx_index = UInt8(0))
+#     :cxf1 in args && (cxf = true; cx_index = UInt8(1))
+#     # Check double write
+#     if :dw in args
+#         dw = true
+#     end
+# 
+#     return InstructionOptions(
+#         nops,
+#         jump,
+#         csx,
+#         cxt,
+#         cxf,
+#         cx_index,
+#         dw,
+#     )
+#     
+# end
+
+function oneofin(a, b)
+    for i in a
+        i in b && return true
+    end
+    return false
 end
-InstructionOptions() = InstructionOptions(
-    zero(UInt8),
-    false,
-    false,
-    false,
-    false,
-    zero(UInt8),
-    false,
-)
 
-
-function getoptions(args::Vector{Any})
-    # Set defaults
-    nops        = zero(UInt8)
-    jump        = false
-    csx         = false
-    cxt         = false
-    cxf         = false
-    cx_index    = zero(UInt8)
-    dw          = false
-
-    # Check for nops  
-    for (i,nop) in enumerate((:nop1, :nop2, :nop3))
+function getoptions(args)
+    # Construct an empty container for kwargs for the options.
+    kwargs = Pair{Symbol,Any}[]
+    # Check for nops. Iterate in the order of number of NOPS for style points.
+    nops = zero(UInt8)
+    for (i, nop) in enumerate((:nop1, :nop2, :nop3))
         if nop in args
-            nops = UInt8(i) 
+            nops = UInt8(i)
         end
     end
-    # Check for jump
+    # Save nop argument if not zero
+    if !iszero(nops)
+        push!(kwargs, (:nops => nops))
+    end
+    # Check fo jump
     if :j in args
-        jump = true
+        push!(kwargs, (:jump => true))
     end
     # Check for conditional execution
-    :csx0 in args && (csx = true; cx_index = UInt8(0))
-    :csx1 in args && (csx = true; cx_index = UInt8(1))
-    :cxt0 in args && (cxt = true; cx_index = UInt8(0))
-    :cxt1 in args && (cxt = true; cx_index = UInt8(1))
-    :cxf0 in args && (cxf = true; cx_index = UInt8(0))
-    :cxf1 in args && (cxf = true; cx_index = UInt8(1))
+    # Initialize conditional execution to "false"
+    csx = oneofin((:csx0, :csx1, :cxt0, :cxt1, :cfx0, :cfx1), args)
+    if csx
+        push!(kargs, (:csx => true))
+        # Figure out the index of the conditional execution flag.
+        if oneofin((:csx0, :cxt0, :cxf0), args)
+            cx_index = UInt8(0)
+        else
+            cx_index = UInt8(1)
+        end
+        push!(kargs, (:cx_index => cx_index))
+    end
     # Check double write
     if :dw in args
-        dw = true
+        push!(kargs, (:sw => false))
     end
 
-    return InstructionOptions(
-        nops,
-        jump,
-        csx,
-        cxt,
-        cxf,
-        cx_index,
-        dw,
-    )
-    
+    return kwargs
 end
 
 
-struct AsapInstruction
-    # The opcode of the instruction
-    op :: Symbol
+@with_kw struct AsapInstruction
+    # The opcode of the instruction. Set the defaultes for the "with_kw" 
+    # constructor to be a "nop" if constructed with no arguments.
+    op :: Symbol = :nop
 
-    src1     :: Symbol
-    src1_val :: Int64
+    # Sources and destination will come in pairs
+    # 1. A Symbol, indication the name of the source or destination. Use symbols
+    #    instead of Strings or Integers because Symbols are interred in Julia 
+    #    and thus compare for equality faster than strings, and are clearer
+    #    visually than integers.
+    # 
+    # 2. An extra metadata value as an integer. For some sources/destinations,
+    #    such as dmem references, this integer will serve as an index, allowing
+    #    for fast decoding.
+    #
+    #    For other instructions, like immediates or branches, this index will
+    #    store other information like branch address, immediate value, or
+    #    start and end addresses for RPT loops. Convenient setter and accessor
+    #    functions will be provided so this doesn't have to be esplicitly 
+    #    remembered
+    src1       :: Symbol = :null
+    src1_index :: Int64  = -1
 
-    src2     :: Symbol
-    src2_val :: Int64
+    src2       :: Symbol = :null
+    src2_index :: Int64  = -1
 
-    dest     :: Symbol
-    dest_val :: Int64
+    dest       :: Symbol = :null
+    dest_index :: Int64  = -1
 
-    options  :: InstructionOptions
+    # ------------------------ #
+    # Options for instructions #
+    # ------------------------ #
 
-    # Metadata
-    signed      :: Bool
-    saturating  :: Bool
-    dest_is_output :: Bool
+    # Number of no-ops to put after this instruction.
+    nops :: UInt8 = zero(UInt8)
+    # Set the "jump" flag for branches
+    jump :: Bool = false
+    # conditional execution
+    # TODO: Make this an enum for smaller storage?
+    csx :: Bool = false
+    cxt :: Bool = false
+    cxf :: Bool = false
+    # Index of the conditional register to use.
+    cx_index::UInt8 = zero(UInt8)
+    # Options for writeback to dmem. If "true", single-write will happen
+    # Default to this as it should be the common case and to bring it into
+    # alignment with the c++ simulator
+    sw::Bool = true
+
+    # Metadata for faster decoding during Stage 4 arithmetic or for performing
+    # stall detection
+    signed      :: Bool = false
+    saturating  :: Bool = false
+    dest_is_output :: Bool = false
 end
 
-function AsapInstruction(
-        op, 
-        src1,
-        src1_val,
-        src2,
-        src2_val,
-        dest,
-        dest_val,
-        options
-    )
-    # Set metadata flags based on op name.
-    signed          = op in signed_ops
-    saturating      = op in saturating_ops
-    dest_is_output  = op in output_dests
-    return AsapInstruction(
-        op, 
-        src1, 
-        src1_val, 
-        src2, 
-        src2_val, 
-        dest, 
-        dest_val, 
-        options,
-        # metadata
-        signed,
-        saturating,
-        dest_is_output,
-    )
-end
+# Removed in favor of using the @with_kw macro and explicitly passed kwargs.
+# function AsapInstruction(
+#         op, 
+#         src1,
+#         src1_val,
+#         src2,
+#         src2_val,
+#         dest,
+#         dest_val,
+#         options
+#     )
+#     # Set metadata flags based on op name.
+#     signed          = op in signed_ops
+#     saturating      = op in saturating_ops
+#     dest_is_output  = op in output_dests
+#     return AsapInstruction(
+#         op, 
+#         src1, 
+#         src1_val, 
+#         src2, 
+#         src2_val, 
+#         dest, 
+#         dest_val, 
+#         options,
+#         # metadata
+#         signed,
+#         saturating,
+#         dest_is_output,
+#     )
+# end
 
-NOP() = AsapInstruction(:nop, :none, -1, :none, -1, :none, -1, InstructionOptions())
+# Alias "NOP" to an empty constructor, which should provide a NOP by default.
+NOP() = AsapInstruction()
 
 
 # Methods on instructions - Since some values may be stored in some 
@@ -281,6 +378,26 @@ NOP() = AsapInstruction(:nop, :none, -1, :none, -1, :none, -1, InstructionOption
 
 # Get branch-target - This is encoded in the "dest_val" field of the branch
 # instructions.
-branch_target(i::AsapInstruction) = i.dest_val
+function branch_target(i::AsapInstruction) 
+    # For debugging, ensure that this is only called on branch instructions.
+    # If not, something ahs gone wrong.
+    @assert i.op == :BR || i.op == :BRL
+    return i.dest_index
+end
 
-# 
+# For repeat start, use src2_index. src1_index may be used if the RPT instruction
+# uses a dmem or other source
+function repeat_start(i::AsapInstruction)
+    @assert i.op == :RPT
+    return i.src2_index
+end
+
+# Similarlym, use the dest_index for the repeat end.
+function repeat_end(i::AsapInstruction)
+    @assert i.op == :RPT
+    return i.dest_index
+end
+
+set_branch_target(x) = (dest_index => x)
+set_repeat_start(x) = (src2_index => x)
+set_repeat_end(x) = (dest_index => x)

@@ -88,10 +88,32 @@ We can walk this expression tree to get:
     instruction.
 """
 function convertcode(expr::Expr)
+    # Need to do several processing steps.
+    # 1. Walk through the code and find all Pseudo-assembly function calls and 
+    #    arguments, emit these as a vector of AsapIntermediate instructions
+    #
+    # 2. Find all "END_RPT" blocks, encode their address in their parent
+    #    "RPT" instruction and remove them from the instruction vector
+    #
+    # 3. Resolve branch targets to addresses, which will just be an index into
+    #    the instruction vector.
+    #
+    # 4. Walk the expression tree again, replacing all pseudo-assembly 
+    #    instructions with constrctors for AsapInstructions. Note, we do this
+    #    step to preserve line numbers for errors. If a user has some kind of
+    #    computation for an immediate that errors, error should preserve line 
+    #    number and filename for easier debugging.
+    #
+    # 5. Return the new code to the caller for execution.
+
     # Split up the function into pieces.
     split_expr = splitdef(expr)
     # Extract intermediate instructions from the body of the code.
-    intermediate_instructions = walkcode(split_expr[:body])
+    intermediate_instructions = getassembly(split_expr[:body])
+    # Encode the repeat blocks and remove the "END_RPT" instructions so 
+    # addresses in the final vector are complete.
+    handle_rpt!(intermediate_instructions)
+
     # Create full instructions from the intermediate instructions.
     # This step through the intermediate instructions is important for
     # getting labels recorded correctly.
@@ -108,7 +130,7 @@ end
 
 # Recursive function for gathering line numbers and first-pass instruction 
 # parsing.
-function walkcode(expr)
+function getassembly(expr)
     instructions = AsapIntermediate[]
 
     # Set line and file variables to null values. Will get filled in as these
@@ -116,6 +138,11 @@ function walkcode(expr)
     line = -1
     file = :null
     label = nothing
+
+    # This is constant and won't change in this function - it's changed later.
+    # However, for clarity, define it here.
+    repeat_start = nothing
+    repeat_end = nothing
 
     # Call "postwalk" on the expression. This will visit the leaves of the 
     # expression tree first, presumably from top to bottom, which is the order
@@ -146,7 +173,16 @@ function walkcode(expr)
             # Skip calls to functions that are not in the provided opcodes.
             # This help keep things like arithmetic for immediates.
             if op in opcodes
-                new_instruction = AsapIntermediate(op, args, label, file, line)
+                new_instruction = AsapIntermediate(
+                    op, 
+                    args, 
+                    label, 
+                    repeat_start, 
+                    repeat_end, 
+                    file, 
+                    line
+                )
+
                 push!(instructions, new_instruction)
 
                 # Clear the metadata to prepare for next instructions.
@@ -156,9 +192,13 @@ function walkcode(expr)
             end
 
         # Record macro calls
-        elseif @capture(ex, @label lab_)
-            # "lab" will be a QuoteNode when it is returned from the @capture
-            # macro. Extract the symbol inside by accessing the "value" field.
+        # The item returned by the @capture will be either a QuoteNode or
+        # a Symbol. For consistency sake, always turn it into a Symbol.
+        #
+        # It seems that code captured from the REPL will be lowered to a Symbol
+        # while code lowered from a file yields a QuoteNode. Not entirely sure
+        # what is going on there.
+        elseif @capture(ex, @label label_quotenode_or_symbol_)
             label = Symbol(lab)
         end
 
@@ -168,6 +208,31 @@ function walkcode(expr)
 
     # Return vector of instructions.
     return instructions
+end
+
+
+function handle_rpt!(intermediates::Vector{AsapIntermediate})
+    # Iterate through each element of the intermediate instructions. 
+    index_of_last_rpt = 0
+    index = 1
+    while index < length(intermediates)
+        if intermediates[index].op == :END_RPT
+            # Save the index of the instruction before this as the end of the
+            # repeat block and delete this op from the instruction vector.
+            indermediates[index_of_last_rpt].repeat_end = index - 1
+
+            # In this case, don't increment "index" because it will 
+            # automatically point to the next instruction since we deleted
+            # :END_RPT
+            deleteat!(intermediates, index)
+        elseif intermediates[index].op == :RPT
+            # Mark the index of the last repeat function for fast setting.
+            index_of_last_rpt = index
+            index += 1
+        else
+            index += 1
+        end
+    end
 end
 
 """
@@ -180,7 +245,7 @@ function expand(intermediates::Vector{AsapIntermediate})
     label_dict = findlabels(intermediates)
     # Step 2: Iterate through each instruction, expand to the full instruction
     # based on the opcode.
-    instructions = [expand(i, label_dict) for i in intermediates]
+    instructions = [:(AsapInstruction($(expand(i, label_dict)))) for i in intermediates]
 end
 
 """
@@ -194,72 +259,74 @@ findlabels(x::Vector{AsapIntermediate}) =
     Dict(k.label => i for (i,k) in enumerate(x) if k.label isa Symbol)
 
 function expand(inst::AsapIntermediate, label_dict)
-    # Set the defaults for what to provide to AsapInstruction
-    src1 = :none
-    src1_val = -1
-    src2 = :none
-    src2_val = -1
-    dest = :none
-    dest_val = -1
-    options = InstructionOptions()
+    # Key-word arguments to pass to the constructor for the instruction.
+    kwargs = Pair{Symbol,Any}[]
 
     # Look at the op code to determine what type of instruciton this is and
     # how to decode it.
     if inst.op in instructions_3operand
-        dest, dest_val = extract_ref(inst.args[1])
-        src1, src1_val = extract_ref(inst.args[2])
-        src2, src2_val = extract_ref(inst.args[3])
+        dest, dest_index = extract_ref(inst.args[1])
+        src1, src1_index = extract_ref(inst.args[2])
+        src2, src2_index = extract_ref(inst.args[3])
+
+        # TODO: Put this in a macro
+        # Make the arguments that are supposed to be symbols into QuoteNodes
+        # so they stay as symbols when interpolated into a further expression.
+        push!(kwargs, (:dest => QuoteNode(dest)))
+        push!(kwargs, (:dest_index => dest_index))
+        push!(kwargs, (:src1, => QuoteNode(src1)))
+        push!(kwargs, (:src1_index => src1_index))
+        push!(kwargs, (:src2 => QuoteNode(src2)))
+        push!(kwargs, (:src2_index => src2_index))
         # If optional flags are provided, slurp them up.
         if length(inst.args) > 3
-            options = getoptions(inst.args[4:end])
+            append!(kwargs, getoptions(inst.args[4:end]))
         end
+
     elseif inst.op in instructions_2operand
         dest, dest_val = extract_ref(inst.args[1]) 
         src1, src1_val = extract_ref(inst.args[2])
-    
+
+        push!(kwargs, (:dest => QuoteNode(dest)))
+        push!(kwargs, (:dest_index => dest_index))
+        push!(kwargs, (:src1 => QuoteNode(src1)))
+        push!(kwargs, (:src1_index => src1_index))
+
         if length(inst.args) > 2
-            options = getoptions(inst.args[4:end])
+            append!(kwargs, options = getoptions(inst.args[4:end]))
         end
     elseif inst.op in instructions_1operand
         src1, src1_val = extract_ref(inst.args[1])
-        options = getoptions(inst.args[2:end])
+
+        push!(kwargs, (:src1 => QuoteNode(src1)))
+        push!(kwargs, (:src1_val => src1_val))
+        append!(kwargs, getoptions(inst.args[2:end]))
 
     # Now to look at the more complicated instructions that use masks.
     elseif inst.op in instructions_branch
         # Set the source to an immediate
-        src1 = :immediate
+        push!(kwargs, :src1 => QuoteNode(:immediate))
         # Build the mask for the immediate
-        src1_val = make_branch_mask(inst.args)
+        push!(kwargs, :src1_val => make_branch_mask(inst.args))
         # Get the index for the destination from the label dictionary
-        dest = :pc
-        dest_val = label_dict[Symbol(inst.args[1])]
+        push!(kwargs, set_branch_target(label_dict[Symbol(inst.args[1])]))
 
         # Get the rest of the options for this instruction.
-        options = getoptions(inst.args[2:end])
+        append!(kwargs, getoptions(inst.args[2:end]))
+
+    elseif inst.op in instructions
     else
         error("Unrecognized op: $(inst.op).")
     end
 
-    return AsapInstruction(
-        inst.op,
-        src1,
-        src1_val,
-        src2,
-        src2_val,
-        dest,
-        dest_val,
-        options
-    )
-
+    return kwargs
 end
 
 # Helper functions
 
 # Cases where an immediate is given - set the symbol to "immediate" and store
 # the value of the immediate as the "value" of the source or destination.
-extract_ref(val::UInt) = (:immediate, reinterpret(Int, val))
-extract_ref(val::Unsigned) = (:immediate, UInt(val))
-extract_ref(val::Integer) =  (:immediate, val)
+extract_ref(kwargs, val::Integer) =  (:immediate, val)
 
 # If just a symbol is given, store that symbol and give a "value" of -1.
 extract_ref(sym::Symbol) =  (sym, -1)
@@ -269,6 +336,8 @@ function extract_ref(expr::Expr)
     # Check if this expression is a :ref expression (like "dmem[0]"), if so
     # return the two args (i.e. :dmem and 0)
     if expr.head == :ref
+        # TODO: check if the first argument is in one of the proper destination
+        # arguments. If it isn't, throw an error?
         return (expr.args[1], expr.args[2])
 
     # Otherwise, assume this expression is some computation for an immediate
