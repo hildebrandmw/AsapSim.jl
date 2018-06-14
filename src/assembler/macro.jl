@@ -224,8 +224,10 @@ function handle_rpt!(intermediates::Vector{AsapIntermediate})
         elseif intermediates[index].op == :RPT
             # Set the start point for this repeat. Since we've removed all
             # END_RPT before this, we don't have to worry about this index
-            # getting messed up.
-            intermediates[index].repeat_start = index
+            # getting messed up. 
+            #
+            # Add 1 so the start points to the next instruction.
+            intermediates[index].repeat_start = index + 1
 
             # Mark the index of the last repeat function for fast setting.
             index_of_last_rpt = index
@@ -253,21 +255,18 @@ function expand(intermediates::Vector{AsapIntermediate})
         kwargs = map(pairs) do p
             key = p[1]
             value = p[2]
+            # Have to build these expression manually with the :kw head because 
+            # doing :($kev = $value) is interpreted as some kind of assignment
+            # rather than passing a keyword argument.
             if value isa Symbol
                 return Expr(:kw, key, Meta.quot(value))
             else
                 return Expr(:kw, key, value)
             end
-            #if value isa Expr
-            #    return :($key = $value) 
-            #else
-            #    return :($key = $(Meta.quot(value)))
-            #end
         end
         return :(AsapInstruction(;$(kwargs...)))
     end
 
-    #instructions = [:(AsapInstruction(;$(expand(i, label_dict))...)) for i in intermediates]
     return instructions
 end
 

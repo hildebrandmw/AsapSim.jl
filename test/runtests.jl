@@ -6,7 +6,9 @@ else
 end
 
 import DataStructures
+using MacroTools
 
 # write your own tests here
 include("fifo.jl")
 include("assembler/macro.jl")
+include("assembler/test_program.jl")
