@@ -18,7 +18,7 @@ test_program = MacroTools.@q function aes137_keysub()
         MOVE( east,  ibuf[0])
         MOVE( east,  ibuf[0])
         MOVE( east,  ibuf[0])
-	END_RPT
+    END_RPT()
 
 	RPT(4)
 		# Valid alternative for -1 nop, but spams warnings for now.
@@ -27,9 +27,9 @@ test_program = MacroTools.@q function aes137_keysub()
 		SUB(null, regbp2, dmem[128], cxs1)  #If regbp1 is 0 to 127, set with carry.
 		SHR(east,  ptrby, 8, cxf1, nop1)
 		AND(east,  aptr0, dmem[130], cxt0)
-	END_RPT
+    END_RPT()
 
-    BRL(main)
+    BRL(:main)
 end
 
 

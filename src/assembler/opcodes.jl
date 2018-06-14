@@ -61,7 +61,7 @@ const instructions_stall = (
 # Special pseudo instructions that still need special treatment from the
 # assembler.
 const instructions_pseudo = (
-    :END_RPT
+    :END_RPT,
 )
 
 const opcodes = union(
@@ -153,8 +153,8 @@ mutable struct AsapIntermediate
     # The label assigned to this instruction
     label       :: Union{Symbol,Void}
     # The end-address if this is a repeat instruction
-    repeat_start :: Union{Symbol, Void}
-    repeat_end  :: Union{Symbol,Void}
+    repeat_start :: Union{Int64, Void}
+    repeat_end  :: Union{Int64,Void}
 
     # Store the file and line numbers to provide better error messages while
     # converting the intermediate instructions into full instructions.
@@ -264,18 +264,18 @@ function getoptions(args)
     # Initialize conditional execution to "false"
     csx = oneofin((:csx0, :csx1, :cxt0, :cxt1, :cfx0, :cfx1), args)
     if csx
-        push!(kargs, (:csx => true))
+        push!(kwargs, (:csx => true))
         # Figure out the index of the conditional execution flag.
         if oneofin((:csx0, :cxt0, :cxf0), args)
             cx_index = UInt8(0)
         else
             cx_index = UInt8(1)
         end
-        push!(kargs, (:cx_index => cx_index))
+        push!(kwargs, (:cx_index => cx_index))
     end
     # Check double write
     if :dw in args
-        push!(kargs, (:sw => false))
+        push!(kwargs, (:sw => false))
     end
 
     return kwargs
@@ -398,6 +398,6 @@ function repeat_end(i::AsapInstruction)
     return i.dest_index
 end
 
-set_branch_target(x) = (dest_index => x)
-set_repeat_start(x) = (src2_index => x)
-set_repeat_end(x) = (dest_index => x)
+set_branch_target(x) = (:dest_index => x)
+set_repeat_start(x) = (:src2_index => x)
+set_repeat_end(x) = (:dest_index => x)
