@@ -162,6 +162,31 @@ mutable struct AsapIntermediate
     line :: Int64
 end
 
+# Convenience constructors.
+function AsapIntermediate(
+        op      ::Symbol, 
+        args    ::Vector, 
+        label = nothing;
+        #kwargs
+        repeat_start = nothing,
+        repeat_end = nothing,
+        file = :null,
+        line = 0
+    ) 
+
+    return AsapIntermediate(op, args, label, repeat_start, repeat_end, file, line)
+end
+
+# For equality purposes, ignore file and line. Makes for easier testing.
+# If "file" and "line" become important for testing function equality, I may
+# have to revisit this.
+Base.:(==)(a::T, b::T) where {T <: AsapIntermediate} = 
+    a.op == b.op &&
+    a.args == b.args &&
+    a.label == b.label &&
+    a.repeat_start == b.repeat_start &&
+    a.repeat_end == b.repeat_end
+
 
 
 # -- Removed in favor of storing these directly in the instruction type to
