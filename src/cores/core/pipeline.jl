@@ -1,153 +1,6 @@
-# Condition and ALU flags for conditional execution, etc.
-#
-# Make this a struct with an API to possibly reimplement as a single integer
-# with bit-twiddling instead of a struct of Bools. Probably not needed but
-# may save some space in the future.
-mutable struct ALUFlags
-    carry       :: Bool
-    negative    :: Bool
-    overflow    :: Bool
-    zero        :: Bool
-end
-ALUFlags() = ALUFlags(false, false, false, false)
-
-mutable struct AddressGenerator
-    start       ::Int16
-    stop        ::Int16
-    current     ::Int16
-    stride      ::Int16
-end
-AddressGenerator() = AddressGenerator(0,0,0,0)
-
-mutable struct CondExec
-    flag        :: Bool
-    mask        :: Int16,
-    unary_op    :: Int16
-    early_kill  :: Bool
-end
-CondExec() = CondExec(false, 0, 0, false)
-
-# For keeping track of instructions through the pipeline.
-# Essentially just a wrapper for the instruction with an extra slot for the
-# result.
-@with_kw mutable struct PipelineEntry
-    instruction :: AsapInstruction
-    # The actual source and result values
-    src1_value  :: Int16 = 0
-    src2_value  :: Int16 = 0
-    result      :: Int16 = 0
-
-    # Data for rolling-back branches. This doesn't really need to be recorded
-    # at every stage, but it will be cleaner to do it this way. It doesn't take
-    # that much memory anyways.
-    old_return_address :: Int64 = 0 
-    old_pc_plus_1      :: Int64 = 0
-    old_repeat_count   :: Int64 = 0
-end
-
-PipelineEntry(i::AsapInstruction = NOP()) = PipelineEntry(instruction = i)
-function PipelineEntry(core::AsapCore, inst::AsapInstruction = NOP())
-    return PipelineEntry(
-        instruction = inst,
-        old_return_address  = core.return_address
-        old_pc_plus_1       = core.pc + 1
-        old_repeat_count    = core.repeat_count
-    )
-end
-
-# Only record the states in stages 3-8. Stages 1-2 are decode stages so there's
-# not much interesting to record there.
-mutable struct AsapPipeline
-    stage1 :: PipelineEntry
-    stage2 :: PipelineEntry
-    stage3 :: PipelineEntry
-    stage4 :: PipelineEntry
-    stage5 :: PipelineEntry
-    stage6 :: PipelineEntry
-    stage7 :: PipelineEntry
-    stage8 :: PipelineEntry
-end
-
-# Initialize to an empty pipeline.
-AsapPipeline() = AsapPipeline(
-    PipelineEntry(),
-    PipelineEntry(),
-    PipelineEntry(),
-    PipelineEntry(),
-    PipelineEntry(),
-    PipelineEntry(),
-    PipelineEntry(),
-    PipelineEntry(),
-)
-
-
-@with_kw mutable struct AsapCore
-    # --- Timing Control --- #
-
-    # Clock period - for registering updates.
-    clock_period :: Int64
-
-    # --- Program --- #
-
-    # Stored program and program counter.
-    program ::Vector{AsapInstruction} = AsapInstruction[]
-    repeat_count        :: Int64 = 0
-    repeat_block_start  :: Int64 = 0
-    repeat_block_end    :: Int64 = 0
-    pc      ::Int64 = 1
-
-    # Mispredicted branch - done in S4
-    branch_mispredict :: Bool = false
-
-    # --- Misc storage elements --- #
-
-    # Input fifo - default the element types of the fifo to Int16s.
-    fifos::Vector{DualClockFifo{Int16}} = [
-        DualClockFifo(Int16, 32),
-        DualClockFifo(Int16, 32),
-    ]
-
-    # Address generators.
-    address_generators::Vector{AddressGenerator} = [
-        AddressGenerator(),
-        AddressGenerator(),
-        AddressGenerator(),
-    ]
-
-    # Hardware pointers
-    pointers :: Vector{Int16} = zeros(Int16, 4)
-
-    # Flags
-    alu_flags :: ALUFlags = ALUFlags()
-
-    # Conditional execution blocks
-    cond_exec :: Vector{CondExec} = [
-        CondExec(),
-        CondExec(),
-    ]
-
-    # Data memory - again, default element types to Int16
-    dmem::Vector{Int16} = zeros(Int16, 256)
-
-    # Hardware return address buffer.
-    return_address :: Int16 = 0
-
-    # Number of pending NOPs to inser in stage 3 of the pipeline.
-    # This is set by the options in the assembler.
-    pending_nops :: Int16 = 0
-
-    # --- Pipeline Bypass Registers --- #
-    result_s5 :: Int16 = zero(Int16)
-    result_s6 :: Int16 = zero(Int16)
-    result_s8 :: Int16 = zero(Int16)
-
-    # --- Pipeline --- #
-    pipeline::AsapPipeline = AsapPipeline()
-end
-
-################################################################################
-# Update Logic
-################################################################################
+#=
+Implementation of the KC2 pipeline.
+=#
 
 #-------------------------------------------------------------------------------
 #                          Stage 0 - PC Control
@@ -273,22 +126,21 @@ end
 #-------------------------------------------------------------------------------
 #                               Stage 1
 #-------------------------------------------------------------------------------
-function pipeline_stage1(core::AsapCore, stall_1::Bool)
+function pipeline_stage1(core::AsapCore, stall::Bool)
     # Read instruction from pipestage.
-    # TODO: Think about branching - repeat.
-    # TODO: Stalling
-    if !stall_1
+    if !stall
         instruction = core.program[core.pc]
-        core.pc += 1
-
         # Insert this instruction into the pipeline.
-        core.pipeline.stage1 = PipelineEntry(instruction, 0)
+        core.pipeline.stage1 = PipelineEntry(core, instruction)
     end
 end
 
 #-------------------------------------------------------------------------------
 #                               Stage 2
 #-------------------------------------------------------------------------------
+function pipeline_stage2(core::AsapCore, stall::Bool)
+end
+
 
 
 #-------------------------------------------------------------------------------
