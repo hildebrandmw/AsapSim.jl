@@ -10,21 +10,67 @@
     zero        :: Bool = false
 end
 
-mutable struct AddressGenerator
-    start       ::Int16
-    stop        ::Int16
-    current     ::Int16
-    stride      ::Int16
+# ------------------------- #
+# --- Address Generator --- #
+# ------------------------- #
+
+# Things to think about: 
+#
+# * Maybe make the "number of bits" for the address generator a parameter if
+# we ever want have generators outside of the 8-bit range of Asap4
+#
+# * Think about write-back timings.
+
+@with_kw mutable struct AddressGenerator
+    start       ::UInt8 = 0
+    stop        ::UInt8 = 0
+    current     ::UInt8 = 0
+    # Old value of the pointer. For rolling back in case of branch mispredict.
+    old         ::UInt8 = 0
+    stride      ::UInt8 = 0
+    # Flag to indicate this needs an increment. Used because multiple operands
+    # in an instruction can read from the same address generator.
+    needs_increment :: Bool = false
 end
-AddressGenerator() = AddressGenerator(0,0,0,0)
+
+function set!(ag::AddressGenerator, start, stop)
+    ag.start = Int16(start)
+    ag.stop  = Int16(stop)
+    ag.current = ag.start
+    return nothing
+end
+
+function set_stride!(ag::AddressGenerator, stride)
+    ag.stride = Int16(stride)
+    return nothing
+end
+
+Base.read(ag::AddressGenerator) = ag.current
+mark(ag::AddressGenerator) = ag.needs_increment = true
+
+function increment!(ag::AddressGenerator) 
+    # If the address generator does not need to be incremented, do nothing and
+    # just return.
+    ag.needs_increment || return nothing
+
+    # Save the old pointer value.
+    ag.old = ag.current
+
+    # Take advantage of the binary arithmetic of julia - pointer will 
+    # automatically wrap around at 256.
+    ag.current = (ag.current == ag.stop) ? ag.start : ag.current + ag.stride
+    return nothing
+end
+
 
 mutable struct CondExec
     flag        :: Bool
     mask        :: Int16
-    unary_op    :: Int16
+    # One of :OR, :AND, :XOR
+    unary_op    :: Symbol
     early_kill  :: Bool
 end
-CondExec() = CondExec(false, 0, 0, false)
+CondExec() = CondExec(false, 0, :OR, false)
 
 # For keeping track of instructions through the pipeline.
 # Essentially just a wrapper for the instruction with an extra slot for the
@@ -143,7 +189,12 @@ AsapPipeline() = AsapPipeline(
     outputs::Dict{Int,F} = Dict{Int,DualClockFifo{Int16}}()
 
     # Flags
-    alu_flags :: ALUFlags = ALUFlags()
+    aluflags :: ALUFlags = ALUFlags()
+
+    # 40-bit accumulator
+    # TODO: Think about wrapping this in a type that auto-truncates to
+    # a set number of bits.
+    accumulator :: Int64 = 0
 
     # ---------------------------- #
     # Dynamic Configuration Memory #
@@ -160,7 +211,7 @@ AsapPipeline() = AsapPipeline(
     pointers :: Vector{Int16} = zeros(Int16, 4)
 
     # Conditional execution blocks
-    cond_exec :: Vector{CondExec} = [
+    condexec :: Vector{CondExec} = [
         CondExec(),
         CondExec(),
     ]

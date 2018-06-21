@@ -4,6 +4,9 @@ module AsapSim
 using Parameters
 using MacroTools
 
+export  @asap4asm,
+        AsapInstruction
+
 include("assembler/assembler.jl")
 
 include("cores/fifo.jl")

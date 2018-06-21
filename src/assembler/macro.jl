@@ -26,66 +26,6 @@ function test()
 end
 ```
 
-This is passed to the macro as an expression tree. Dumping the expression tree
-yields:
-
-```julia
-Expr
-  head: Symbol function
-  args: Array{Any}((2,))
-    1: Expr
-      head: Symbol call
-      args: Array{Any}((1,))
-        1: Symbol test
-      typ: Any
-    2: Expr
-      head: Symbol block
-      args: Array{Any}((3,))
-        1: Expr
-          head: Symbol macrocall
-          args: Array{Any}((2,))
-            1: Symbol @label
-            2: QuoteNode
-              value: Symbol start
-          typ: Any
-        2: Expr
-          head: Symbol call
-          args: Array{Any}((4,))
-            1: Symbol ADD
-            2: Expr
-              head: Symbol ref
-              args: Array{Any}((2,))
-                1: Symbol dmem
-                2: Int64 0
-              typ: Any
-            3: Expr
-              head: Symbol ref
-              args: Array{Any}((2,))
-                1: Symbol dmem
-                2: Int64 1
-              typ: Any
-            4: Int64 10
-          typ: Any
-        3: Expr
-          head: Symbol call
-          args: Array{Any}((3,))
-            1: Symbol BR
-            2: QuoteNode
-              value: Symbol start
-            3: Symbol U
-          typ: Any
-      typ: Any
-  typ: Any
-```
-
-We can walk this expression tree to get:
-
-* The opcode for the assembly instruction
-* The sources and destination for the instruction, including whether the source
-    or destination includes an index (such as dmem) or is unambiguous (like an
-    immediate)
-* Any options such as conditional execution that are provided with the 
-    instruction.
 """
 function convertcode(expr::Expr)
     # Need to do several processing steps.
@@ -119,6 +59,10 @@ function convertcode(expr::Expr)
     # getting labels recorded correctly.
     instructions = expand(intermediate_instructions)
 
+    # TODO: Eventually want to replace this with a move elegent method of
+    # adding each instruction individually to the vector to allow for assembly
+    # programs to include their own local definitions for immediates. However,
+    # this works for now as a simple technique.
     return MacroTools.@q function $(split_expr[:name])()
         return [$(instructions...)]
     end
@@ -300,6 +244,11 @@ function expand(inst::AsapIntermediate, label_dict)
         # argumends
         @pairpush! kwargs dest dest_index src1 src1_index src2 src2_index
 
+        # Check if the destination is an output. If so, set this flag to true.
+        if dest in DestinationOutputs
+            push!(kwargs, (:dest_is_output => true))
+        end
+
         # If optional flags are provided, slurp them up.
         if length(inst.args) > 3
             append!(kwargs, getoptions(inst.args[4:end]))
@@ -310,8 +259,14 @@ function expand(inst::AsapIntermediate, label_dict)
         src1, src1_index = extract_ref(inst.args[2])
 
         @pairpush! kwargs dest dest_index src1 src1_index
+
+        # Flag if destination is output.
+        if dest in DestinationOutputs
+            push!(kwargs, (:dest_is_output => true))
+        end
+
         if length(inst.args) > 2
-            append!(kwargs, getoptions(inst.args[4:end]))
+            append!(kwargs, getoptions(inst.args[3:end]))
         end
         
     elseif inst.op in instructions_1operand
@@ -349,6 +304,9 @@ function expand(inst::AsapIntermediate, label_dict)
     else
         error("Unrecognized op: $(inst.op).")
     end
+
+    # Finally, get extra data associated with the operation.
+    append!(kwargs, opdata(inst.op))
 
     return kwargs
 end
