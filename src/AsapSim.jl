@@ -4,8 +4,11 @@ module AsapSim
 using Parameters
 using MacroTools
 
-include("cores/fifo.jl")
 include("assembler/assembler.jl")
+
+include("cores/fifo.jl")
+include("cores/core/core.jl")
+include("cores/core/pipeline.jl")
 
 
 end # module

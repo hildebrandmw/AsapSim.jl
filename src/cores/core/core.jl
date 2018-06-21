@@ -3,13 +3,12 @@
 # Make this a struct with an API to possibly reimplement as a single integer
 # with bit-twiddling instead of a struct of Bools. Probably not needed but
 # may save some space in the future.
-mutable struct ALUFlags
-    carry       :: Bool
-    negative    :: Bool
-    overflow    :: Bool
-    zero        :: Bool
+@with_kw mutable struct ALUFlags
+    carry       :: Bool = false
+    negative    :: Bool = false
+    overflow    :: Bool = false
+    zero        :: Bool = false
 end
-ALUFlags() = ALUFlags(false, false, false, false)
 
 mutable struct AddressGenerator
     start       ::Int16
@@ -21,7 +20,7 @@ AddressGenerator() = AddressGenerator(0,0,0,0)
 
 mutable struct CondExec
     flag        :: Bool
-    mask        :: Int16,
+    mask        :: Int16
     unary_op    :: Int16
     early_kill  :: Bool
 end
@@ -31,7 +30,7 @@ CondExec() = CondExec(false, 0, 0, false)
 # Essentially just a wrapper for the instruction with an extra slot for the
 # result.
 @with_kw mutable struct PipelineEntry
-    instruction :: AsapInstruction
+    instruction :: AsapInstruction = NOP()
     # The actual source and result values
     src1_value  :: Int16 = 0
     src2_value  :: Int16 = 0
@@ -40,23 +39,24 @@ CondExec() = CondExec(false, 0, 0, false)
     # Data for rolling-back branches. This doesn't really need to be recorded
     # at every stage, but it will be cleaner to do it this way. It doesn't take
     # that much memory anyways.
-    old_return_address :: Int64 = 0 
+    old_return_address :: Int64 = 0
     old_pc_plus_1      :: Int64 = 0
     old_repeat_count   :: Int64 = 0
 end
 
-PipelineEntry(i::AsapInstruction = NOP()) = PipelineEntry(instruction = i)
-function PipelineEntry(core::AsapCore, inst::AsapInstruction = NOP())
+PipelineEntry(i::AsapInstruction) = PipelineEntry(instruction = i)
+function PipelineEntry(core, inst::AsapInstruction)
     return PipelineEntry(
         instruction = inst,
-        old_return_address  = core.return_address
-        old_pc_plus_1       = core.pc + 1
-        old_repeat_count    = core.repeat_count
+        old_return_address  = core.return_address,
+        old_pc_plus_1       = core.pc + 1,
+        old_repeat_count    = core.repeat_count,
     )
 end
 
-# Only record the states in stages 3-8. Stages 1-2 are decode stages so there's
-# not much interesting to record there.
+# Asap Pipeline.
+#
+# Note: The data in each stage is the START of each stage.
 mutable struct AsapPipeline
     stage1 :: PipelineEntry
     stage2 :: PipelineEntry
@@ -80,8 +80,10 @@ AsapPipeline() = AsapPipeline(
     PipelineEntry(),
 )
 
-
-@with_kw mutable struct AsapCore
+# Basic AsapCore. Parameterize based on
+#
+# 1. The type of FIFO - allows for injection of TestFifos to help with tests
+@with_kw mutable struct AsapCore{F <: AbstractFifo}
     # --- Timing Control --- #
 
     # Clock period - for registering updates.
@@ -91,19 +93,28 @@ AsapPipeline() = AsapPipeline(
 
     # Stored program and program counter.
     program ::Vector{AsapInstruction} = AsapInstruction[]
+
+    # Note on Program Counter (pc) - In actual hardware, it is base 0 ...
+    # because hardware is base 0. However, Julia is base 1, so we'll have to
+    # keep that in mind.
+    pc                  :: Int64 = 1
+
+    # Hardware registers holding information about repeat values.
     repeat_count        :: Int64 = 0
     repeat_block_start  :: Int64 = 0
     repeat_block_end    :: Int64 = 0
-    pc                  :: Int64 = 1
 
-    # Note on Program Counter (pc) - In actual hardware, it is base 0 ... 
-    # because hardware is base 0. However, Julia is base 1, so we'll have to
-    # keep that in mind.
+    # Hardware return address buffer.
+    return_address :: Int16 = 0
+
+    # Number of pending NOPs to inser in stage 3 of the pipeline.
+    # This is set by the options in the assembler.
+    pending_nops :: Int16 = 0
 
     # Mispredicted branch - done in S4
     branch_mispredict :: Bool = false
 
-    # Stall signals. 
+    # Stall signals.
     # Note that stages 0 and 1 stall together
     # Stages 3 and 4 stall together
     # Stages 5, 6, 7, 8 stall together
@@ -113,11 +124,12 @@ AsapPipeline() = AsapPipeline(
     stall_34 :: Bool = false
     stall_5678 :: Bool = false
 
-
-    # --- Misc storage elements --- #
+    # ---------------------- #
+    # Input and Output Fifos #
+    # ---------------------- #
 
     # Input fifo - default the element types of the fifo to Int16s.
-    fifos::Vector{DualClockFifo{Int16}} = [
+    fifos::Vector{F} = [
         DualClockFifo(Int16, 32),
         DualClockFifo(Int16, 32),
     ]
@@ -125,10 +137,10 @@ AsapPipeline() = AsapPipeline(
     # Set this up as a Dict to handle cases where directions do not have
     # connected outputs.
     #
-    # NOTE: In Julia 0.7+, small unions are faster, so it may be possible to
-    # convert this to a Union{Void,DualClockFifo{Int16}} without incurring
-    # any nasty runtime penalties.
-    obufs::Dict{Int,DualClockFifo{Int16}} = Dict{Int,DualClockFifo{Int16}}()
+    # NOTE: In Julia 0.7+, small unions are faster than in 0.6+, so it may be
+    # possible to convert this to a Union{Void,DualClockFifo{Int16}} without
+    # incurring any nasty runtime penalties.
+    outputs::Dict{Int,F} = Dict{Int,DualClockFifo{Int16}}()
 
     # Flags
     alu_flags :: ALUFlags = ALUFlags()
@@ -156,71 +168,245 @@ AsapPipeline() = AsapPipeline(
     # Mask for output
     obuf_mask :: BitVector = falses(8)
 
-    # Data memory - again, default element types to Int16
+    # ----------- #
+    # Data memory #
+    # ----------- #
+
     dmem::Vector{Int16} = zeros(Int16, 256)
 
-    # Hardware return address buffer.
-    return_address :: Int16 = 0
-
-    # Number of pending NOPs to inser in stage 3 of the pipeline.
-    # This is set by the options in the assembler.
-    pending_nops :: Int16 = 0
-
     # --- Pipeline Bypass Registers --- #
+
     # NOTE: Get these straight from the instructions in the pipeline.
     # result_s5 :: Int16 = zero(Int16)
     # result_s6 :: Int16 = zero(Int16)
     # result_s8 :: Int16 = zero(Int16)
 
-    # --- Pipeline --- #
+    # -------- #
+    # Pipeline #
+    # -------- #
     pipeline::AsapPipeline = AsapPipeline()
 end
 
+
+################################################################################
+# Stall Detection
+################################################################################
+
+"""
+    StallSignals
+    
+Collection of stall signals that can occur in the Asap4 processor.
+
+Parameters:
+
+* `stall_01` - Stall stages 0 and 1. Happens if stalled on a fifo or if stage
+    2 has pending NOPS to insert.
+* `stall_234` - Stall stages 2, 3, and 4. Happens if stalled on fifo.
+* `stall_567` - Stall stages 5, 6, and 7. Happens if stalled on a fifo and none
+    of the destinations in stages 5, 6, and 7 is an output.
+* `nop_5` - Insert NOPS into stage 5. Happens if stalled on an output but
+    one of the destinations in stages 5, 6, or 7 is an output.
+"""
+struct StallSignals
+    stall_01  :: Bool
+    stall_234 :: Bool 
+    stall_567 :: Bool
+    nop_5     :: Bool
+end
+
 function stall_check(core::AsapCore)
-    # TODO: Check if stage 4 is a STALL OP
+    # Check if stalled on a FIFO.
+    fifo_stall = stall_fifo_check(core)
 
-    # Check destinations and sources for network accesses.
-    # Stall will occur if any selected input is empty or any selected output
-    # is full.
+    # Default stall signals to "false"
+    stall_01 = false
+    stall_234 = false
+    stall_567 = false
+    nop_5 = false
 
-    # Use bitvectors to scalably store the masks for input and output
-    # directions.
-    # TODO: Make the number of inputs and output parametric.
-    check_ibuf = falses(2)
-    check_obuf = falses(8)
+    # If we're stalled on a fifo, stall stages 0, 1, 2, 3, and 4.
+    #
+    # Check stages 5, 6, and 7 to see if they are writing to an output.
+    # If not, stall stages 5, 6, and 7 also.
+    if fifo_stall
+        stall_01  = true
+        stall_234 = true
 
+        if core.pipeline.stage5.instruction.dest_is_output || 
+            core.pipeline.stage6.instruction.dest_is_output ||
+            core.pipeline.stage7.instruction.dest_is_output
+
+            nop_5 = true
+        else
+            stall_567 = true
+        end
+
+    # Otherwise, stall stages 0 and 1 if stage 2 has pending NOPs
+    else
+        if core.pending_nops > 0
+            stall_01 = true
+        end
+    end
+
+    # Return a collection of stall signals.
+    return StallSignals(
+        stall_01,
+        stall_234,
+        stall_567,
+        nop_5,
+    )
+end
+
+
+"""
+    stall_fifo_check(core::AsapCore)
+
+Return `true` if the core should stall, `false` otherwise. A core will stall if:
+
+* The instruction in stage 4 is a STALL instruction. In this case, the core will
+    only stall if all masked inputs are empty and all masked outputs are full.
+
+* The instruction in stage 4 is NOT a STALL instruction. Then accesses to inputs
+    and outputs will be checked. A stall will be generated if any read input is
+    empty or any written-to output is full.
+"""
+function stall_fifo_check(core::AsapCore)
     # Get the pipeline stage 4 instruction.
-    instruction = core.pipeline.stage4.instruction
+    stage4 = core.pipeline.stage4
 
-    # Check if stag4 instruction is doing an read.
-    if instruction.src1 == :fifo || instruction.src1 == :fifo_next
-        check_ibuf[instruction.src1_index] = true
+    # Early termination of stage 4 is a NOP - NOPs can't stall.
+    stage4.instruction.op == :NOP && (return false)
+
+    # If this instruction is a STALL instruction, pass its mask is found in
+    # the src1_value field
+    if stage4.instruction.op == :STALL
+        return stall_check_stall_op(core, stage4.src1_value)        
+
+    # Otherwise, do a normal stall check.
+    else
+        return stall_check_io(core, stage4.instruction)
     end
-    if instruction.src2 == :fifo || instruction.src2 == :fifo_next
-        check_ibuf[instruction.src2_index] = true
+end
+
+"""
+    stall_check_stall_op(core::AsapCore, mask::Integer)
+
+Return `true` if `core` should stall as a result of a STALL instruction.
+Argument `mask` is the stall bit mask indicating which hardware resources
+should be checked.
+
+Core will stall only if all hardware resources checked are stalling. That is,
+all inputs are empty and all outputs are full.
+
+The bit encoding is:
+
+* Bit 0: Stall on empty input fifo 0
+* Bit 1: Stall on empty input fifo 1
+* Bit 2: Stall on empty packet in (TODO)
+* Bit 3: Stall on empty memory in (TODO)
+* Bit 4: Stall on all obuf_mask direction full
+* Bit 5: Stall on full packet out (TODO)
+* Bit 6: Stall on full memory out (TODO)
+"""
+function stall_check_stall_op(core::AsapCore, mask)
+    # Set default stall to be true. If any further evaluations break the default
+    # We can terminate early.
+    default = true
+
+    # Start checking all of the bits. This is a little painful, but I can't
+    # really think of a more elegant way to do this.
+
+    # --- Check inputs ---
+    if mask & (1 << 0) != 0
+        # Note: Converting from index 0 to index 1
+        stall_check_ibuf(core, 1, default) != default && return false
     end
 
-    # Check if doing a write to an output.
-    if instruction.dest == :obuf_mask
-        check_obuf = core.obuf_mask
+    if mask & (1 << 1) != 0
+        # Note: Converting from index 0 tio index 1
+        stall_check_ibuf(core, 2, default) != default && return false
+    end
+
+    # --- Check obuf mask ---
+    if mask & (1 << 4) != 0
+        # Iterate through the OBUF mask. If a flag is set, check that output.
+        for (index, flag) in enumerate(core.obuf_mask)
+            flag || continue
+            stall_check_obuf(core, index, default) != default && return false
+        end
+    end
+
+    # Give "unimplemented error" for unimplemented flags. 
+    if mask & (0b1101100) != 0
+        error("""
+        Bits 2, 3, 5, and 6 of the STALL instruction mask are not yet 
+        implemented.
+        """)
+    end
+
+    return default
+end
+
+function stall_check_io(core::AsapCore, instruction::AsapInstruction)
+    # Default to not stall. Exit early if any IO interaction should cause a
+    # stall to happen.
+    default = false
+
+    # --- Check inputs ---
+
+    # NOTE: Must do conversion from index 0 to index 1
+    if instruction.src1 == :ibuf || instruction.src1 == :ibuf_next
+        # The fifo to check should be in the src1_index field of the instruction.
+        stall_check_ibuf(core, instruction.src1_index + 1, default) != default && return true
+    end
+
+    if instruction.src2 == :ibuf || instruction.src2 == :ibuf_next
+        stall_check_ibuf(core, instruction.src2_index + 1, default) != default && return true
+    end
+
+    # Check writes to an output
+    if instruction.dest == :output
+        stall_check_obuf(core, instruction.dest_index + 1, default) != default && return true
+    # Check if doing a broadcast. Then, stall if any of the outputs selected
+    # by the obuf_mask are stalling.
     elseif instruction.dest == :obuf
-        check_obuf[instruction.dest_index] = true
+        for (index, flag) in enumerate(core.obuf_mask)
+            flag || continue
+            stall_check_obuf(core, index, default) != default && return true
+        end
     end
 
-    # Flags have been set - check stalls
-    for (index, val) in enumerate(check_ibuf)
-        # Don't execute if this flag is not set.
-        val || continue
+    # All checks passed, don't stall!
+    return default
+end
 
-        # Check if the corresponding fifo is empry
-        isempty(core.fifo[index]) && return true
+# Break out the various stall checks into a bunch of little functions.
+
+function stall_check_ibuf(core, index, default::Bool) :: Bool
+    # If the default value is to stall, return false if the given fifo is
+    # not empty to go against the stall.
+    if default == true && !isempty(core.fifos[index]) 
+        return false
+
+    # Otherwise, if the default is not to stall, return "true" if the fifo is
+    # empty to indicate the core should stall
+    elseif default == false && isempty(core.fifos[index]) 
+        return true
+
+    # If the above conditions are not met, just return the default.
+    else
+        return default
     end
+end
 
-    # Check for full outputs
-    for (index, val) in enumerate(check_obuf)
-        # Don't execute if flag is not set
-        val || continue
-        isfull(core.fifo[index]) && return true
+function stall_check_obuf(core, index, default :: Bool) :: Bool
+    # Logic is similar to the ibuf check, but looks for full fifos instead of
+    # empty fifos.
+    if default == true && !isfull(core.outputs[index])
+        return false
+    elseif default == false && isfull(core.outputs[index])
+        return true
+    else
+        return default
     end
-
 end

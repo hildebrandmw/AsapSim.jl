@@ -124,13 +124,21 @@ to recompile any code.
 const SourceSymbols = (
     :dmem,      # data memory (index needed)
     :immediate, # immediate
-    :fifo,      # input fifo (index needed)
-    :fifo_peek, # input fifo, no increment (index needed)
+    :ibuf,      # input fifo (index needed)
+    :ibuf_next, # input fifo, no increment (index needed)
+    :bypass,    # bypass resigter (index needed)
     :pointer,   # dereference hardware pointer (index needed)
     :ag,        # dereference address generator, no increment (index needed)
     :ag_pi,     # dereference address generator, increment (index needed)
+    :pointer_bypass, # dereference bypass register 1.
     :acc,       # read lower 16 bits from accumulator
     :ret,       # read return address
+
+    # --- Unimplemented --- #
+    # :external_mem
+    # :external_mem_next
+    # :packet_router
+    # :packet_router_next
 )
 
 
@@ -139,8 +147,26 @@ const SourceSymbols = (
 
 const DestinationSymbols = (
     :dmem,      # data memory (index needed)
-    :pointer,   # set hardware pointers
+    # TODO: For the dcmem, will probably be helpful to put in aliases for 
+    # common operations to help with the readability of assembly.
+    :dcmem,     # dynamic configuration memory (index needed)
+    :pointer,   # set hardware pointers (index needed)
+    :ag,        # dereference address generator, no increment (index needed)
+    :ag_pi,     # dereference address generator, increment (index needed)
+    :pointer_bypass, # dereference bypass register 1
+    :null,       # No write back
+    :output,     # Write to OBUF, directions starting at 0 are:
+        # east, north, west, south, right, up, left, down. (index needed)
+    :obuf,       # Write to all output broadcast directions.
+
+    # --- Unimplemented ---#
+    # :external_mem
+    # :packet_router
+    # :dynamic_net
+    # :done_flag
+    # :start_pulse_test
 )
+
 
 # Intermediate form for an instruction.
 # The pseudo-assembly will be parsed directly into these intermediate
@@ -187,78 +213,6 @@ Base.:(==)(a::T, b::T) where {T <: AsapIntermediate} =
     a.repeat_start == b.repeat_start &&
     a.repeat_end == b.repeat_end
 
-
-
-# -- Removed in favor of storing these directly in the instruction type to
-# avoid a level of wrapping.
-# struct InstructionOptions
-#     # Number of no-ops to put after this instruction.
-#     nops::UInt8
-#     # Set the "jump" flag for branches
-#     jump::Bool
-#     # conditional execution
-#     csx::Bool
-#     cxt::Bool
-#     cxf::Bool
-#     # Index of the conditional register to use.
-#     cx_index::UInt8
-#     # Options for writeback to dmem. If "true", double-write will happen
-#     dw::Bool
-# end
-# InstructionOptions() = InstructionOptions(
-#     zero(UInt8),
-#     false,
-#     false,
-#     false,
-#     false,
-#     zero(UInt8),
-#     false,
-# )
-# 
-# 
-# function getoptions(args::Vector{Any})
-#     # Set defaults
-#     nops        = zero(UInt8)
-#     jump        = false
-#     csx         = false
-#     cxt         = false
-#     cxf         = false
-#     cx_index    = zero(UInt8)
-#     dw          = false
-# 
-#     # Check for nops  
-#     for (i,nop) in enumerate((:nop1, :nop2, :nop3))
-#         if nop in args
-#             nops = UInt8(i) 
-#         end
-#     end
-#     # Check for jump
-#     if :j in args
-#         jump = true
-#     end
-#     # Check for conditional execution
-#     :csx0 in args && (csx = true; cx_index = UInt8(0))
-#     :csx1 in args && (csx = true; cx_index = UInt8(1))
-#     :cxt0 in args && (cxt = true; cx_index = UInt8(0))
-#     :cxt1 in args && (cxt = true; cx_index = UInt8(1))
-#     :cxf0 in args && (cxf = true; cx_index = UInt8(0))
-#     :cxf1 in args && (cxf = true; cx_index = UInt8(1))
-#     # Check double write
-#     if :dw in args
-#         dw = true
-#     end
-# 
-#     return InstructionOptions(
-#         nops,
-#         jump,
-#         csx,
-#         cxt,
-#         cxf,
-#         cx_index,
-#         dw,
-#     )
-#     
-# end
 
 function oneofin(a, b)
     for i in a
@@ -358,41 +312,12 @@ end
 
     # Metadata for faster decoding during Stage 4 arithmetic or for performing
     # stall detection
+    pointer_op  :: Bool = false
+    addsub      :: Bool = false
     signed      :: Bool = false
     saturating  :: Bool = false
     dest_is_output :: Bool = false
 end
-
-# Removed in favor of using the @with_kw macro and explicitly passed kwargs.
-# function AsapInstruction(
-#         op, 
-#         src1,
-#         src1_val,
-#         src2,
-#         src2_val,
-#         dest,
-#         dest_val,
-#         options
-#     )
-#     # Set metadata flags based on op name.
-#     signed          = op in signed_ops
-#     saturating      = op in saturating_ops
-#     dest_is_output  = op in output_dests
-#     return AsapInstruction(
-#         op, 
-#         src1, 
-#         src1_val, 
-#         src2, 
-#         src2_val, 
-#         dest, 
-#         dest_val, 
-#         options,
-#         # metadata
-#         signed,
-#         saturating,
-#         dest_is_output,
-#     )
-# end
 
 # Alias "NOP" to an empty constructor, which should provide a NOP by default.
 NOP() = AsapInstruction()

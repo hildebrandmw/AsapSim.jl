@@ -139,6 +139,16 @@ end
 #                               Stage 2
 #-------------------------------------------------------------------------------
 function pipeline_stage2(core::AsapCore, stall::Bool)
+    # Don't do anything if stalled.
+    stall && return nothing
+
+    # Do pointer dereference checks.
+    # If any source or destination is targeting an address generator or hardware
+    # pointer, get the DMEM address of that pointer and convert the instruction
+    # into a DMEM instruction.
+    stage2 = core.pipeline.stage2
+    instruction = stage2.instruction
+
 end
 
 
@@ -147,24 +157,179 @@ end
 #                               Stage 3
 #-------------------------------------------------------------------------------
 
-function pipeline_stage3(core::AsapCore)
-    # Check if any pending NOPS exist. If so, insert a NOP into the pipeline.
-    if core.pending_nops > 0
-        core.pipeline.stage3 = PipelineEntry()
-    else
-        # Fetch an instruction from the program. Increment the program counter.
-        instruction = core.program[core.pc]
-        core.pc += 1
-        # Save this instruction as the new pipeline entry. Default the return
-        # value to zero. This may cause complications instead of leaving it as
-        # some for of unitialilzed, but will do for now.
-        core.pipeline.stage3 = PipelineEntry(instruction, 0)
-    end
+function pipeline_stage3(core::AsapCore, stall::Bool)
+    # Don't do anything if stalled. 
+    stall && return nothing
 end
 
 #-------------------------------------------------------------------------------
 #                               Stage 4
 #-------------------------------------------------------------------------------
+
+# Helper function.
+# Convert all of the arguments to unsigned numbers, perform the operation,
+# then convert back to signed.
+#
+# Due to the magic of inlining, this all seems to get opimized away. Hooray!
+#op_unsigned(op, args...) = Int64(op(reinterpret.(UInt16, args)...))
+
+function asap_add(x::Int16, y::Int16)
+    # Check carry out 
+    cout = (typemax(UInt16) - reinterpret(UInt16, x)) < reinterpret(UInt16, y)
+    result = x + y
+    overflow = (x > 0 && y > 0 && result < 0) || (x < 0 && y < 0 && result > 0)
+    # Return sum and carry-out. Since all arithmetic in Julia is in 2's 
+    # complement, we don't need to worry about converting "x" and "y" to 
+    # unsigned because we'll get the same end result.
+    return x + y, cout, overflow
+end
+asap_add(x::Int16, y::Int16, cin::Bool) = asap_add(x, y + Int16(cin))
+
+function stage_4_alu(
+        stage::PipelineEntry, 
+        flags::ALUFlags, 
+        cxflags::Vector{CondExec}
+    )
+    # Unpack the instruction from the pipeline stage to get the instruction
+    # op code.
+    instruction = stage.instruction
+
+    # Get the instruction inputs.
+    src1 = stage.src1_value
+    src2 = stage.src2_value
+
+
+    # Convert the carry flag and overflow flags to Int16s
+    carry_next = flags.carry
+    overflow_next = flags.overflow
+
+    # Begin a big long chain of IF-else cases.
+    op = instruction.op
+
+    # Break instructions into two categories:
+    #
+    # Addition and subtraction logic, which will share carry detection and 
+    # saturation at the end, and other more complicated logic.
+
+    if instruction.addsub
+
+        overflow_next = false
+        # Unsigned Addition
+        if op == :ADDSU || op == :ADDU || op == :ADDS || op == :ADD
+            stage.result, carry_next, overflow_next = asap_add(src1, src2)
+        elseif op == :ADDCSU || op == :ADDCU || op == :ADDCS || op == :ADDC
+            stage.result, carry_next, overflow_next = asap_add(src1, src2, flags.carry)
+
+        # Unsigned subtraction
+        elseif op == :SUBSU || op == :SUBU || op == :SUBS || op == :SUB
+            stage.result, carry_next, overflow_next = asap_add(src1, -src2)
+        elseif op == :SUBCSU || op == :SUBCU || op == :SUBCS || op == :SUBC
+            stage.result, carry_next, overflow_next = asap_add(src1, -src2, !flags.carry)
+
+        else
+            error("""
+            Unrecognized addition-subtraction instruction: $op.
+            """)
+        end
+        # Overflow is XOR or bits 15 and 16
+        #overflow_next = (carry_next ⊻ ((stage.result & 0x8000) != 0))
+    else
+        # Logic operations.
+        if op == :OR
+            stage.result = src1 | src2
+        elseif op == :AND
+            stage.result = src1 & src2
+        elseif op == :XOR
+            stage.result = src1 ⊻ src2
+
+        # Move Ops
+        elseif op == :MOVE || op == :MOVI
+            stage.result = src1
+        elseif op == :MOVC
+            stage.result = flags.carry ? src1 : src2
+        elseif op == :MOVZ
+            stage.result = flags.zero ? src1 : src2
+        elseif op == :MOVCX0
+            stage.result = cxflags[1].flag ? src1 : src2
+        elseif op == :MOVCX1
+            stage.result = cxflags[2].flag ? src2 : src2
+
+        # Reduction operators.
+        elseif op == :ANDWORD
+            stage.result = (src1 == Int16(0xFFFF)) ? Int16(1) : Int16(0)
+        elseif op == :ORWORD
+            stage.result = (src1 == 0) ? Int16(0) : Int16(1)
+        elseif op == :XORWORD
+            stage.result = isodd(count_ones(src1)) ? Int16(1) : Int16(0)
+
+        # Special operators
+        elseif op == :BTRV
+            error("BTRV not implemented yet")
+        elseif op == :LSD
+            stage.result = (src1 < 0) ? count_ones(src1) - 1 : count_zeros(src1) - 1
+        elseif op == :LSDU
+            stage.result = count_zeros(src1)
+
+        # Shift operations
+        elseif op == :SHL
+            # Since we store numbers as signed, must check if src2 is negative.
+            result = (src2 >= 16 || src2 < 0) ? 0 : Int(src1) << src2
+            carry_next = (result & 0x10000) != 0
+            stage.result = Int16(result & 0xFFFF)
+        elseif op == :SHR
+            # Shift left 1 so we can capture the carry bit.
+            result = Int(reinterpret(UInt16, src1)) << 1
+            result = (src2 > 16 || src2 < 0) ? 0 : result >> src2
+            # Carry the low bit
+            carry_next = (result & 1) != 0
+            stage.result = Int16((result >> 1) & 0xFFFF)
+        elseif op == :SRA
+            result = Int(src1) << 1
+            result = (src2 > 16 || src2 < 0) ? 0 : result >> src2
+            carry_next = (result & 1) != 0
+            stage.result = Int16((result >> 1) & 0xFFFF)
+
+        # Shift left and carry
+        elseif op == :SHLC
+            # Insert carry on the right - preshift by 1
+            result = Int(src1) << 1 | Int(flags.carry)
+            result = (src2 >= 16 || src2 < 0) ? 0 : result << src2
+            # Because of the pre-shift, the new carry is at bit 17
+            carry_next = (result & 0x20000) != 0
+            stage.result = Int16((result >> 1) & 0xFFFF)
+
+        elseif op == :SHRC # Shift right and carry
+            # Insert carry-in on the left.
+            # Make room for carry out on the right by left-shifting by 1 
+            result = (Int(reinterpret(UInt16, src1)) | (Int(flags.carry) << 16)) << 1
+            result = (src2 > 16 || src2 < 0) ? 0 : result >> src2
+            carry_next = (result & 1) != 0
+            stage.result = Int16((result >> 1) & 0xFFFF)
+
+        elseif op == :SRAC
+            result = (Int(src1) | Int(flags.carry) << 16) << 1
+            result = (src2 > 16 || src2 < 0) ? 0 : result >> src2
+            carry_next = (result & 1) != 0
+            stage.result = Int16((result >> 1) & 0xFFFF)
+
+        # Unrecognized instruction
+        else
+            error("Unrecognized op $op.")
+        end
+    end
+
+    # Update the zero and negative flats.
+    zero_next = stage.result == 0
+    negative_next = (stage.result & 0x8000) != 0
+
+    # Return the next carry flags.
+    return ALUFlags(
+        carry_next,
+        negative_next,
+        overflow_next,
+        zero_next,
+    ) 
+end
 
 
 #-------------------------------------------------------------------------------

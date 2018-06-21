@@ -7,8 +7,11 @@ end
 
 import DataStructures
 using MacroTools
+using BenchmarkTools
 
-# write your own tests here
-include("fifo.jl")
-include("assembler/macro.jl")
-include("assembler/test_program.jl")
+#include("assembler/macro.jl")
+#include("assembler/test_program.jl")
+#
+#include("fifo.jl")
+#include("core/stall.jl")
+include("core/alu.jl")

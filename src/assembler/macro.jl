@@ -338,6 +338,14 @@ function expand(inst::AsapIntermediate, label_dict)
         # Get the rest of the options for this instruction.
         append!(kwargs, getoptions(inst.args[2:end]))
 
+    # Stall Instructions
+    elseif inst.op in instructions_stall
+        # Set source to an immediate and build the appropriate mask
+        push!(kwargs, :src1 => :immediate)
+        push!(kwargs, :src1_index => make_stall_mask(inst.args))
+
+        # Get any further options
+        append!(kwargs, getoptions(inst.args))
     else
         error("Unrecognized op: $(inst.op).")
     end
@@ -395,3 +403,36 @@ function make_branch_mask(args)
     end
     return mask
 end
+
+function make_stall_mask(args)
+    # Similar to branch mask.
+    possible_args = (
+        :ibuf0, 
+        :ibuf1, 
+        :packet_in, 
+        :memory_in, 
+        :obuf_full,
+        :packet_out,
+        :memory_out,
+    )
+
+    for (bit, arg) in enumerate(possible_args)
+        indices = find(x -> x == arg, args)
+        if length(indices) > 0
+            mask |= 1 << (bit - 1)
+            deleteat!(args, indices)
+        end
+    end
+
+    # No default bit needs to be set for the stall mask.
+    return mask
+end
+
+# Accessors for reading stall bits.
+stall_empty_ibuf0(inst::AsapInstruction)    = inst.src1_index & (1 << 0) != 0
+stall_empty_ibuf1(inst::AsapInstruction)    = inst.src1_index & (1 << 1) != 0
+stall_empty_packet(inst::AsapInstruction)   = inst.src1_index & (1 << 2) != 0
+stall_empty_mem(inst::AsapInstruction)      = inst.src1_index & (1 << 3) != 0
+stall_full_packet(inst::AsapInstruction)    = inst.src1_index & (1 << 4) != 0
+stall_full_mem(inst::AsapInstruction)       = inst.src1_index & (1 << 5) != 0
+stall_full_obuf(inst::AsapInstruction)      = inst.src1_index & (1 << 6) != 0

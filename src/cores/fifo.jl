@@ -1,7 +1,20 @@
 # Model for dual-clocked fifo.
 import Base: write, read
 
-@with_kw mutable struct DualClockFifo{T}
+abstract type AbstractFifo end
+
+# A test fifo for testing various methods involving cores.
+@with_kw mutable struct TestFifo <: AbstractFifo
+    empty :: Bool = false
+    full  :: Bool = false
+end
+
+isfull(t::TestFifo) = t.full
+isempty(t::TestFifo) = t.empty
+
+
+# Model of the Asap Dual Clocked Fifos.
+@with_kw mutable struct DualClockFifo{T} <: AbstractFifo
     # Statistics
     num_reads :: Int = 0
     num_writes :: Int = 0
