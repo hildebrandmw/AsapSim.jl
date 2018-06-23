@@ -6,7 +6,7 @@
     fifo = AsapSim.DualClockFifo(Int64, buffersize)
 
     @test AsapSim.buffersize(fifo) == buffersize
-    @test AsapSim.readempty(fifo) == true
+    @test AsapSim.isreadempty(fifo) == true
 
     # Do some testing of the "isfull" function, which is independent of the 
     # actual fifo implementation.
@@ -19,48 +19,46 @@
 
     # Verify that we can write to the fifo. Should be able to write two times
     # before receiving an invalid write signal.
-    @test AsapSim.writeready(fifo) == true
+    @test AsapSim.iswriteready(fifo) == true
     AsapSim.write(fifo, 10)
-    AsapSim.write_update(fifo)
+    AsapSim.writeupdate!(fifo)
 
-    @test AsapSim.writeready(fifo) == true
+    @test AsapSim.iswriteready(fifo) == true
     AsapSim.write(fifo, 20)
-    AsapSim.write_update(fifo)
+    AsapSim.writeupdate!(fifo)
 
-    @test AsapSim.writeready(fifo) == false
+    @test AsapSim.iswriteready(fifo) == false
 
     # ----------------- #
     # Test some reading #
     # ----------------- #
     # No read should be ready because we haven't requested a read yet.
-    @test AsapSim.readready(fifo) == false
-    AsapSim.read_request(fifo)
-    AsapSim.read_update(fifo)
+    @test AsapSim.isreadready(fifo) == false
+    AsapSim.increment!(fifo)
+    AsapSim.readupdate!(fifo)
 
-    @test AsapSim.readready(fifo) == true
+    @test AsapSim.isreadready(fifo) == true
     @test AsapSim.read(fifo) == 10
 
     # Set another read request before the next update.
-    AsapSim.read_request(fifo)
-    AsapSim.read_update(fifo)
-    @test AsapSim.readready(fifo) == true
+    AsapSim.increment!(fifo)
+    AsapSim.readupdate!(fifo)
+    @test AsapSim.isreadready(fifo) == true
     @test AsapSim.read(fifo) == 20
-    @test AsapSim.readempty(fifo) == true
+    @test AsapSim.isreadempty(fifo) == true
 
-    # Don't send a read update, ensure that "readready" is false. Now that the
-    # fifo is empty, another read request should not result in another "readready"
-    # signal.
-    AsapSim.read_update(fifo)
-    @test AsapSim.readready(fifo) == false
-    AsapSim.read_request(fifo)
-    AsapSim.read_update(fifo)
-    @test AsapSim.readready(fifo) == false
+    # Ensure we can keep reading from the fifo until we ask it to increment again.
+    AsapSim.readupdate!(fifo)
+    @test AsapSim.isreadready(fifo) == true
+    AsapSim.increment!(fifo)
+    AsapSim.readupdate!(fifo)
+    @test AsapSim.isreadready(fifo) == false
 
     # Do another write
     AsapSim.write(fifo, 30)
-    AsapSim.write_update(fifo)
-    AsapSim.read_update(fifo)
-    @test AsapSim.readready(fifo) == true
+    AsapSim.writeupdate!(fifo)
+    AsapSim.readupdate!(fifo)
+    @test AsapSim.isreadready(fifo) == true
     @test AsapSim.read(fifo) == 30
 end
 
@@ -101,24 +99,24 @@ end
         for i in 1:test_cycles
             # Do a read if possible and if we're on the correct cycle.
             if mod(i, rp) == 0
-                AsapSim.read_request(fifo)
-                if AsapSim.readready(fifo)
+                if AsapSim.isreadready(fifo)
+                    AsapSim.increment!(fifo)
                     readdata = AsapSim.read(fifo)
                     # Check that it matches the data from the que
                     @test readdata == shift!(que)
                 end
                 # clock the fifo
-                AsapSim.read_update(fifo)
+                AsapSim.readupdate!(fifo)
             end
 
             # Write if possible and on the correct cycle
             if mod(i, wp) == 0
-                if AsapSim.writeready(fifo) 
+                if AsapSim.iswriteready(fifo) 
                     writedata = rand(datatype)
                     push!(que, writedata)
                     AsapSim.write(fifo, writedata)
                 end
-                AsapSim.write_update(fifo)
+                AsapSim.writeupdate!(fifo)
             end
         end
     end

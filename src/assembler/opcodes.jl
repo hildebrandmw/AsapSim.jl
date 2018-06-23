@@ -5,93 +5,129 @@
 
 # Instructions with three operands:
 #   inst dst src1 src2 [options]
-const instructions_3operand = (
-    # Unsigned arithmetic
-    :ADDU,:ADDSU,:ADDCU,:ADDCSU,
-    :SUBU,:SUBSU,:SUBCU,:SUBCSU,
+
+@enum OpType::Int8 NOP_TYPE ALU_TYPE MAC_TYPE BRANCH_TYPE OTHER_TYPE PSUEDO_TYPE
+
+@with_kw_noshow struct InstructionDefinition
+    opcode :: Symbol
+    # True if this instruction has these fields.
+    dest :: Bool = true
+    src1 :: Bool = true
+    src2 :: Bool = true
+
+    # Classification of operand type
+    optype :: OpType
+    signed :: Bool = false
+    saturate :: Bool = false
+end
+
+# Convenience constructor so we don't have to write "opcode" and "optype"
+# all the time.
+function InstructionDefinition(opcode::Symbol, optype::OpType; kwargs...)
+    return InstructionDefinition(;
+        opcode = opcode,
+        optype = optype,
+        kwargs...
+    )
+end
+
+
+const InstD = InstructionDefinition
+
+# Define all of the Instructions
+const AsapInstructionList = (
+    # --- Instructions using all 3 operands --- #
+
+    # Unsigned Arithmetic
+    InstD(:ADDU,   ALU_TYPE),
+    InstD(:ADDSU,  ALU_TYPE, saturate = true),
+    InstD(:ADDCU,  ALU_TYPE),
+    InstD(:ADDCSU, ALU_TYPE, saturate = true),
+    InstD(:SUBU,   ALU_TYPE),
+    InstD(:SUBSU,  ALU_TYPE, saturate = true),
+    InstD(:SUBCU,  ALU_TYPE),
+    InstD(:SUBCSU, ALU_TYPE, saturate = true),
+
     # Signed Arithmetic
-    :ADD,:ADDS,:ADDC,:ADDCS,
-    :SUB,:SUBS,:SUBC,:SUBCS,
-    # Logic operations
-    :OR,:AND,:XOR,
-    # Conditional moves
-    :MOVC,:MOVZ,:MOVCX0,:MOVCX1,
+    InstD(:ADD,    ALU_TYPE, signed = true),
+    InstD(:ADDS,   ALU_TYPE, signed = true, saturate = true),
+    InstD(:ADDC,   ALU_TYPE, signed = true),
+    InstD(:ADDCS,  ALU_TYPE, signed = true, saturate = true),
+    InstD(:SUB,    ALU_TYPE, signed = true),
+    InstD(:SUBS,   ALU_TYPE, signed = true, saturate = true),
+    InstD(:SUBC,   ALU_TYPE, signed = true),
+    InstD(:SUBCS,  ALU_TYPE, signed = true, saturate = true),
+
+    # Logic Operatins
+    InstD(:OR,  ALU_TYPE),
+    InstD(:AND, ALU_TYPE),
+    InstD(:XOR, ALU_TYPE),
+
+    # 3 operand conditional moves
+    InstD(:MOVC, ALU_TYPE),
+    InstD(:MOVZ, ALU_TYPE),
+    InstD(:MOVCX0, ALU_TYPE),
+    InstD(:MOVCX1, ALU_TYPE),
+
     # Shifts
-    :SHL,:SHR,:SRA,:SHLC,:SHRC,:SRAC,
+    InstD(:SHL,  ALU_TYPE),
+    InstD(:SHR,  ALU_TYPE),
+    InstD(:SRA,  ALU_TYPE),
+    InstD(:SHLC, ALU_TYPE),
+    InstD(:SHRC, ALU_TYPE),
+    InstD(:SRAC, ALU_TYPE),
+
     # Multiplication
-    :MULTL,:MULTH,:MULTLU,:MULTLH,
+    InstD(:MULTL,  MAC_TYPE, signed = true),
+    InstD(:MULTH,  MAC_TYPE, signed = true),
+    InstD(:MULTLU, MAC_TYPE),
+    InstD(:MULTHU, MAC_TYPE),
+
     # MACC
-    :MACL,:MACH,:MACCL,:MACCH,
-    :MACLU,:MACHU,:MACCLU,:MACCHU,
-)
+    InstD(:MACL,   MAC_TYPE, signed = true),
+    InstD(:MACH,   MAC_TYPE, signed = true),
+    InstD(:MACCL,  MAC_TYPE, signed = true),
+    InstD(:MACCH,  MAC_TYPE, signed = true),
+    InstD(:MACLU,  MAC_TYPE),
+    InstD(:MACHU,  MAC_TYPE),
+    InstD(:MACCLU, MAC_TYPE),
+    InstD(:MACCHU, MAC_TYPE),
 
-# Instructions with two operands:
-#   inst dst src1
-const instructions_2operand = (
+    # --- Operatins without a SRC2 ---
+
     # Unconditional moves
-    :MOVE,:MOVI,
-    # Unary reductions
-    :ANDWORD,:ORWORD,:XORWORD,
-    # Misc logic
-    :BTRV,:LSD,:LSDU,
+    InstD(:MOVE,    ALU_TYPE, src2 = false),
+    InstD(:MOVI,    ALU_TYPE, src2 = false),
+    # Unary Reductions
+    InstD(:ANDWORD, ALU_TYPE, src2 = false),
+    InstD(:ORWORD,  ALU_TYPE, src2 = false),
+    InstD(:XORWORD, ALU_TYPE, src2 = false),
+    # Misc Logic
+    InstD(:BTRV,    ALU_TYPE, src2 = false),
+    InstD(:LSD,     ALU_TYPE, src2 = false),
+    InstD(:LSDU,    ALU_TYPE, src2 = false),
     # Accumulate
-    :ACCSH,:ACCSHU,
+    InstD(:ACCSH,   MAC_TYPE, src2 = false, signed = true),
+    InstD(:ACCSHU,  MAC_TYPE, src2 = false),
+
+    # --- Instructions without a SRC2 or DEST
+    InstD(:RPT,   OTHER_TYPE, src2 = false, dest = false),
+    InstD(:BR,    BRANCH_TYPE, src2 = false, dest = false),
+    InstD(:BRL,   BRANCH_TYPE, src2 = false, dest = false),
+    InstD(:STALL, OTHER_TYPE, src2 = false, dest = false),
+
+    # --- Instructions with no arguments ---
+    InstD(:NOP, NOP_TYPE, src1 = false, src2 = false, dest = false),
+
+    # --- Pseudo instructions --- 
+    # Appear in input assembly but not in output program.
+    InstD(:END_RPT, PSUEDO_TYPE, src1 = false, src2 = false, dest = false),
 )
 
-const instructions_1operand = (
-    :RPT,
-)
-
-const instructions_0operand = (
-    :NOP,
-)
-
-# Basic branch instructions - put them in their own category because of mask
-# construction.
-
-# TODO: add the convenience options like in the c++ simulator.
-const instructions_branch = (
-    :BR,:BRL
-)
-
-const instructions_stall = (
-    :STALL,
-)
-
-# Special pseudo instructions that still need special treatment from the
-# assembler.
-const instructions_pseudo = (
-    :END_RPT,
-)
-
-const opcodes = union(
-    instructions_3operand, 
-    instructions_2operand, 
-    instructions_1operand,
-    instructions_0operand,
-    instructions_branch,
-    instructions_stall,
-    instructions_pseudo,
-)
-
-
-#-------------------------------------------------------------------------------
-# Misc. classifications of OPs
-
-const signed_ops = (
-    :ADD, :ADDS, :ADDC, :ADDCS,
-    :SUB, :SUBS, :SUBC, :SUBCS,
-    :LSC,
-    :SRA,:SRAC,
-    :MULTL, :MULTH, :MACL, :MACH, :MACCL, :MACCH, :ACCSH
-)
-
-const saturating_ops = (
-    :ADDSU, :ADDCSU,
-    :SUBSU, :SUBCSU,
-    :ADDS, :ADDCS,
-    :SUBS, :SUBCS,
-)
+# Create a dictionary mapping opcodes to their instruction definition
+const Instruction_Dict = Dict(i.opcode => i for i in AsapInstructionList)
+isop(x::Symbol) = haskey(Instruction_Dict, x)
+getdef(x::Symbol) = Instruction_Dict[x]
 
 const output_dests = (
     :output,
@@ -228,7 +264,6 @@ end
 
 # Enums for instruction type and conditional execution
 @enum CXFlag::Int8 NO_CX CX_SET CX_TRUE CX_FALSE 
-@enum OpType::Int8 NOP_TYPE ALU_TYPE MAC_TYPE BRANCH_TYPE OTHER_TYPE
 
 function getoptions(args)
     # Construct an empty container for kwargs for the options.
@@ -280,7 +315,7 @@ end
 @with_kw_noshow struct AsapInstruction
     # The opcode of the instruction. Set the defaultes for the "with_kw" 
     # constructor to be a "nop" if constructed with no arguments.
-    op :: Symbol = :nop
+    op :: Symbol = :NOP
 
     # Sources and destination will come in pairs
     # 1. A Symbol, indication the name of the source or destination. Use symbols
@@ -370,21 +405,6 @@ end
 
 # Alias "NOP" to an empty constructor, which should provide a NOP by default.
 NOP() = AsapInstruction()
-
-# Set the optype for this operation. If this is an ALU operation, also set
-# if it is to be saturated and if it is signed.
-function opdata(op::Symbol)
-    pairs = []
-    if op in signed_ops
-        push!(pairs, (:signed => true))
-    end
-
-    if op in saturating_ops
-        push!(pairs, (:saturate => true))
-    end
-
-    return pairs
-end
 
 
 # Methods on instructions - Since some values may be stored in some 

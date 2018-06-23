@@ -2,11 +2,91 @@
 Implementation of the KC2 pipeline.
 =#
 
+# There's a lot of twiddling in dealing with some of the bitmasks for some
+# instructions. This is a helpful function to avoid writing out a lot of this
+# manually.
+isbitset(x::Integer, i) = (x & (1 << i)) != 0
+
 # Basically clock the core.
 function update!(core::AsapCore)
 
     # First, get a record of all the stall signals that are active this cycle.
     stalls = stall_check(core)
+
+    # Evaluate stage 0 - get the next-state signals to avoid changing the
+    # state of "core" until the end of the cycle.
+    stage0_nextstate = pipeline_stage0(core, stalls.stall_01)
+
+    # Update pipe stages 1, 2, and 3.
+    # These are mutating functions and will change their start-of-stage pipeline
+    # entries.
+    #
+    # At the end, we will have to shift these entries in the pipeline according
+    # to the set stall signals.
+    pipeline_stage1(core, stalls.stall_01)
+    pipeline_stage2(core, stalls.stall_234)
+    pipeline_stage3(core, stalls.stall_234)
+
+    # Stage 4 sets new ALU Flags. Since these flags are used in Stage 5 to
+    # evaluate conditional execution, store them here and update the flags
+    # at the end of this function.
+    stage4_nextstate = pipeline_stage4(core, stalls.stall_234)
+
+    # Evaluate Stages 5, 6, and 7. These again are mutating functiong with
+    # no returned next state.
+    pipeline_stage5(core, stalls.stall_567, stalls.nop_5)
+    pipeline_stage6(core, stalls.stall_567)
+    pipeline_stage7(core, stalls.stall_567)
+
+    # Do Stage 8 write-back. Note that this stage never stalls, but after it
+    # executes, it turns its instruction into a NOP which avoids further
+    # writebacks.
+    pipeline_stage8(core)
+
+    # Now commit the updates for Stages 0 and 4
+    # TODO: Maybe make these special types that can update core with using a
+    # @generated update function ...
+
+    # Stage 0 update
+    core.pc             = stage0_nextstate.pc
+    core.repeat_count   = stage0_nextstate.repeat_count
+    core.repeat_start   = stage0_nextstate.repeat_start
+    core.repeat_end     = stage0_nextstate.repeat_end
+    core.return_address = stage0_nextstate.return_address
+
+    # Stage 4 update
+    core.aluflags = stage4_nextstate
+
+    # Shuffle the pipeline - start at the end and move forward.
+    pipeline = core.pipeline
+    if !stalls.stall_567
+        pipeline.stage8 = pipeline.stage7
+        pipeline.stage7 = pipeline.stage6
+        pipeline.stage6 = pipeline.stage5
+        # Don't update stage 5 since it will automatically insert NOPS if needed.
+    end
+
+    if !stalls.stall_234
+        pipeline.stage5 = pipeline.stage4
+        pipeline.stage4 = pipeline.stage3
+        pipeline.stage3 = pipeline.stage2
+    end
+
+    if !stalls.stall_01
+        pipeline.stage2 = pipeline.stage1
+    end
+
+    # Clock the read side of the input fifos.
+    for fifo in core.fifos
+        readupdate!(fifo)
+    end
+
+    # Clock the write side of the output fifos.
+    for fifo in values(core.outputs)
+        writeupdate!(fifo)
+    end
+
+    return nothing
 end
 
 
@@ -14,8 +94,33 @@ end
 #                          Stage 0 - PC Control
 #-------------------------------------------------------------------------------
 
+# There's a circular dependency between the PC update and updates of various
+# signals down the pipeline. We don't want this stage to mutate the state of
+# the Core and for down-stream pipeline stages to see those changes until the
+# next call to "update". So, have pipeline_stage0 return a struct with the
+# next state for items in the core. This can then be updated later to mutate
+# "core" without those changes being visible to other pipestages this cycle.
+struct Stage0NextState
+    # Next state of the program counter.
+    pc :: Int
+    # Hardware looper
+    repeat_count :: Int
+    repeat_start :: Int
+    repeat_end   :: Int
+    # New return address
+    return_address :: Int
+end
+
+
 # NOTE: Need to think about how to best structure this for testing.
 function pipeline_stage0(core::AsapCore, stall::Bool)
+    # Initialize the next state values to the current state of the core.
+    pc_next = core.pc
+    repeat_count_next = core.repeat_count
+    repeat_start_next = core.repeat_start
+    repeat_end_next   = core.repeat_end
+    return_address_next = core.return_address
+
     # Grab info from stage 1 - need to look at instructions as they come out
     # of the IMEM to detect branches.
     stage1 = core.pipeline.stage1
@@ -33,10 +138,10 @@ function pipeline_stage0(core::AsapCore, stall::Bool)
     stage5 = core.pipeline.stage5
 
     ## Setup some preliminary variables to use elsewhere
-    repeat_loop = core.pc == core.repeat_block_end && core.repeat_count > 1
+    repeat_loop = core.pc == core.repeat_end && core.repeat_count > 1
 
     # Compute the next PC if no branch happens
-    next_pc_unbranched = (!stall && repeat_loop) ? core.repeat_block_start : core.pc + 1
+    next_pc_unbranched = (!stall && repeat_loop) ? core.repeat_start : core.pc + 1
 
 
     # --------------------- #
@@ -46,26 +151,25 @@ function pipeline_stage0(core::AsapCore, stall::Bool)
     # If a past branch was mispredicted, restore the old repeat count because the
     # new one is potentially out-dated
     if core.branch_mispredict
-        core.repeat_count = stage4.old_repeat_count
-        
+        repeat_count_next = stage4.old_repeat_count
+
     # Check if stage 4 is a RPT instruction. If so, grab the value of the repeat
     # counter and store it.
     elseif stage4.instruction.op == :RPT
-        core.repeat_count = stage4.src1_val
+        repeat_count_next = stage4.src1_val
 
     # Check if PC is equal to the current repeat end block and there are pending
     # repeats. If so, decrement the repeat counter.
     elseif !stall && repeat_loop
-        core.repeat_count -= 1
+        repeat_count_next = core.repeat_count - 1
     end
 
     # ---------------------------------- #
     # Update repeat start and end blocks #
     # ---------------------------------- #
     if stage4.instruction.op == :RPT
-        # TODO
-        core.repeat_block_start
-        core.repeat_block_end
+        repeat_start_next = repeat_start(stage4.instruction)
+        repeat_end_next = repeat_end(stage4.insruction)
     end
 
     # --------------------- #
@@ -77,25 +181,25 @@ function pipeline_stage0(core::AsapCore, stall::Bool)
     # 2. Stage 5 write to return address
     # 3. Mispredicted non-jump. Restore the old return address.
     # 4. S1 has a new predicted taken branch.
-    # TODO
     if core.branch_mispredict && stage4.instruction.options.jump
-        core.return_address = stage4.old_pc_plus_1
+        return_address_next = stage4.old_pc_plus_1
 
     # If explicitly writing to return_address in Stage 5
-    elseif stage5.instruction.dest == :return_address
+    elseif stage5.instruction.dest == :ret
         # TODO: Do a bounds check to make sure this stays in bounds.
-        core.return_address = stage5.result
+        # TODO: Make stage5 instruction a NOP?
+        return_address_next = stage5.result
 
-    # Check if rolling back a non-jhump instruction
-    elseif core.branch_mispredic && !stage4.instruction.options.jump
-        core.return_address = stage4.old_return_address
+    # Check if rolling back a non-jump instruction
+    elseif core.branch_mispredict && !stage4.instruction.options.jump
+        return_address_next = stage4.old_return_address
 
     # Check if stage 1 has a predicted-taken jump. If so, save the return
     # address as the next untaken PC.
     elseif !stall && stage1.instruction.op == :BRL && stage1.instruction.options.jump
-        core.return_address = next_pc_unbranched
+        return_address_next = next_pc_unbranched
     end
-    
+
     # ---------------- #
     # Update PC Conter #
     # ---------------- #
@@ -103,16 +207,16 @@ function pipeline_stage0(core::AsapCore, stall::Bool)
     # Rollback from mispredicted branches
     if core.branch_mispredict
         # If mispredicted branch was a return, go to its return address
-        if stage4.instruction.src1 == :return_address
-            core.pc = stage4.old_return_address
+        if stage4.instruction.src1 == :ret
+            pc_next = stage4.old_return_address
 
         # If this branch was auto-taken, restore to its PC + 1
         elseif stage4.instruction.op == :BRL
-            core.pc = stage4.old_pc_plus_1
+            pc_next = stage4.old_pc_plus_1
 
         # Otherwise, go to its target.
         else
-            core.pc = branch_target(stage4.instruction)
+            pc_next = branch_target(stage4.instruction)
         end
 
     # Do nothing if stalling this stage.
@@ -121,14 +225,23 @@ function pipeline_stage0(core::AsapCore, stall::Bool)
 
     # Check for autobranching for the instruction in stage 1.
     elseif stage1.instruction.op == :BRL
-        if stage1.instruction.src1 == :return_address
-            core.pc = core.return_address
+        if stage1.instruction.src1 == :ret
+            pc_next = core.return_address
         else
-            core.pc = branch_target(stage1.instruction)
+            pc_next = branch_target(stage1.instruction)
         end
     else
-        core.pc = next_pc_unbranched
+        pc_next = next_pc_unbranched
     end
+
+    # Return state updates to caller
+    return Stage0NextState(
+        pc_next,
+        repeat_count_next,
+        repeat_start_next,
+        repeat_end_next,
+        return_address_next,
+    )
 end
 
 #-------------------------------------------------------------------------------
@@ -137,7 +250,11 @@ end
 function pipeline_stage1(core::AsapCore, stall::Bool)
     # Read instruction from pipestage.
     if !stall
-        instruction = core.program[core.pc]
+        if core.pc <= length(core.program)
+            instruction = core.program[core.pc]
+        else
+            instruction = NOP()
+        end
         # Insert this instruction into the pipeline.
         core.pipeline.stage1 = PipelineEntry(core, instruction)
     end
@@ -166,23 +283,27 @@ function dereference(core::AsapCore, operand::Symbol, index::T) where T
     # Address generator with increment.
     #
     # This just marks the address generator as needing an increment. The actual
-    # incremeting operation will happen after all operands in the instruction 
+    # incremeting operation will happen after all operands in the instruction
     # have had a chance to be dereferenced.
     elseif operand == :ag_pi
+        # Mark this generator as needing an update.
+        #
+        # Do this before updating index - otherwise we're gonna have a bad
+        # time ...
+        mark(core.address_generators[index + 1])
+
         operand = :dmem
         index = T(read(core.address_generators[index + 1]))
-        # Mark this generator as needing an update.
-        masrk(core.address_generators[index + 1])
 
     elseif operand == :pointer_bypass
         operand = :dmem
-        # Read from the result of Stage 5 (since pipe stages here are the 
+        # Read from the result of Stage 5 (since pipe stages here are the
         # beginning of stage values, this is the computed result of the last
         # Stage 4)
         index = T(core.pipeline.stage5.result)
     end
 
-    # Return new operand and index. If the provided operand was not a 
+    # Return new operand and index. If the provided operand was not a
     # dereference, we just return them unchanded.
     return (operand, index)
 end
@@ -235,7 +356,7 @@ function stage3_read(core::AsapCore, operand::Symbol, index::T) where T
 
     # Do a check for immediates.
     if operand == :immediate
-        # For immediates, the index in the instruction is the value of the 
+        # For immediates, the index in the instruction is the value of the
         # immediate. Note that this also takes core of extended immediates
         # because I'm treating that very loosely.
         return_value = Int16(index)
@@ -243,7 +364,7 @@ function stage3_read(core::AsapCore, operand::Symbol, index::T) where T
     # Check accumulator
     elseif operand == :acc
         # Take the lower 16-bits of the accumulator.
-        return_value = reinterpret(Int16, core.accumulator & 0xFFFF)
+        return_value = reinterpret(Int16, UInt16(core.accumulator & 0xFFFF))
 
     # Check bypass registers 3 and 5
     elseif operand == :bypass
@@ -259,7 +380,7 @@ function stage3_read(core::AsapCore, operand::Symbol, index::T) where T
     elseif operand == :ret
         return_value = core.return_address
 
-    # DMEM read - while technically this is routed in Stage 4, we get the 
+    # DMEM read - while technically this is routed in Stage 4, we get the
     # correct behavior if we just do the read here.
     elseif operand == :dmem
         # Add 1 to index to convert from index 0 to index 1.
@@ -276,7 +397,7 @@ function pipeline_stage3(core::AsapCore, stall::Bool)
 
     (stall || instruction.op == :NOP) && return nothing
 
-    # Handle the reading of operands. 
+    # Handle the reading of operands.
     stage3.src1_value = stage3_read(core, instruction.src1, instruction.src1_index)
     stage3.src2_value = stage3_read(core, instruction.src2, instruction.src2_index)
 
@@ -290,8 +411,9 @@ function pipeline_stage4(core::AsapCore, stall::Bool)
     # Skip stalls and nops.
     stage4 = core.pipeline.stage4
     instruction = stage4.instruction
+    new_aluflags = core.aluflags
 
-    (stall || instruction.op == :NOP) && return nothing
+    (stall || instruction.op == :NOP) && return new_aluflags
 
     # Do a stage 4 read. Provide a default value for alread-read instructions.
     stage4.src1_value = stage4_read(
@@ -309,22 +431,16 @@ function pipeline_stage4(core::AsapCore, stall::Bool)
     )
 
     # If this is an ALU operation ... do an ALU evaluation.
-    if instruction.alu_op
+    if instruction.optype == ALU_TYPE
         new_aluflags = stage4_alu(stage4, core.aluflags, core.condexec)
-
-    # Do a check for the RPT instruction.
-    elseif instruction.op == :RPT
-        core.repeat_count = stage.src1_value
-        # Start and end encoded in the instruction itself. Access these with
-        # the accessor functions.
-        core.repeat_start = repeat_start(instruction)
-        core.repeat_end = repeat_end(instruction)
     end
+
+    return new_aluflags
 end
 
 
 function stage4_read(core::AsapCore, operand::Symbol, index::T, default::U) where {T,U}
-    # Default the return value 
+    # Default the return value
     return_value::U = default
 
     # Check if this is a fifo read.
@@ -332,14 +448,14 @@ function stage4_read(core::AsapCore, operand::Symbol, index::T, default::U) wher
         # TODO: Maybe check that the FIFO is indeed ready to be read here.
         # The stall check ... SHOULD ... take care of this, but if there are
         # bugs going on, it might be helpful.
-        fifo = core.fifo[index + 1]
+        fifo = core.fifos[index + 1]
         return_value = read(fifo)
         # Send a read request to increment the fifo
-        read_request(fifo)
+        increment!(fifo)
 
     # Read from FIFO without increment.
     elseif operand == :ibuf_next
-        fifo = core.fifo[index + 1]
+        fifo = core.fifos[index + 1]
         return_value = read(fifo)
 
     # TODO: Packet Routers and memory
@@ -347,11 +463,11 @@ function stage4_read(core::AsapCore, operand::Symbol, index::T, default::U) wher
     # Read from bypass registers 1, 2, and 4.
     elseif operand == :bypass
         if index == 1
-            return_value = core.stage5.result
+            return_value = core.pipeline.stage5.result
         elseif index == 2
-            return_value = core.stage6.result
+            return_value = core.pipeline.stage6.result
         elseif index == 4
-            return_value == core.stage8.result
+            return_value == core.pipeline.stage8.result
         end
     end
 
@@ -360,20 +476,20 @@ end
 
 # Helper function.
 function asap_add(x::Int16, y::Int16)
-    # Check carry out 
+    # Check carry out
     cout = (typemax(UInt16) - reinterpret(UInt16, x)) < reinterpret(UInt16, y)
     result = x + y
     overflow = (x > 0 && y > 0 && result < 0) || (x < 0 && y < 0 && result > 0)
-    # Return sum and carry-out. Since all arithmetic in Julia is in 2's 
-    # complement, we don't need to worry about converting "x" and "y" to 
+    # Return sum and carry-out. Since all arithmetic in Julia is in 2's
+    # complement, we don't need to worry about converting "x" and "y" to
     # unsigned because we'll get the same end result.
     return x + y, cout, overflow
 end
 asap_add(x::Int16, y::Int16, cin::Bool) = asap_add(x, y + Int16(cin))
 
 function stage4_alu(
-        stage::PipelineEntry, 
-        flags::ALUFlags, 
+        stage::PipelineEntry,
+        flags::ALUFlags,
         cxflags::Vector{CondExec}
     )
     # Unpack the instruction from the pipeline stage to get the instruction
@@ -394,114 +510,102 @@ function stage4_alu(
 
     # Break instructions into two categories:
     #
-    # Addition and subtraction logic, which will share carry detection and 
+    # Addition and subtraction logic, which will share carry detection and
     # saturation at the end, and other more complicated logic.
 
-    if instruction.addsub
 
-        overflow_next = false
-        # Unsigned Addition
-        if op == :ADDSU || op == :ADDU || op == :ADDS || op == :ADD
-            stage.result, carry_next, overflow_next = asap_add(src1, src2)
-        elseif op == :ADDCSU || op == :ADDCU || op == :ADDCS || op == :ADDC
-            stage.result, carry_next, overflow_next = asap_add(src1, src2, flags.carry)
+    # Unsigned Addition
+    if op == :ADDSU || op == :ADDU || op == :ADDS || op == :ADD
+        stage.result, carry_next, overflow_next = asap_add(src1, src2)
+    elseif op == :ADDCSU || op == :ADDCU || op == :ADDCS || op == :ADDC
+        stage.result, carry_next, overflow_next = asap_add(src1, src2, flags.carry)
 
-        # Unsigned subtraction
-        elseif op == :SUBSU || op == :SUBU || op == :SUBS || op == :SUB
-            stage.result, carry_next, overflow_next = asap_add(src1, -src2)
-        elseif op == :SUBCSU || op == :SUBCU || op == :SUBCS || op == :SUBC
-            stage.result, carry_next, overflow_next = asap_add(src1, -src2, !flags.carry)
+    # Unsigned subtraction
+    elseif op == :SUBSU || op == :SUBU || op == :SUBS || op == :SUB
+        stage.result, carry_next, overflow_next = asap_add(src1, -src2)
+    elseif op == :SUBCSU || op == :SUBCU || op == :SUBCS || op == :SUBC
+        stage.result, carry_next, overflow_next = asap_add(src1, -src2, !flags.carry)
+    # Logic operations.
+    elseif op == :OR
+        stage.result = src1 | src2
+    elseif op == :AND
+        stage.result = src1 & src2
+    elseif op == :XOR
+        stage.result = src1 ⊻ src2
 
-        else
-            error("""
-            Unrecognized addition-subtraction instruction: $op.
-            """)
-        end
-        # Overflow is XOR or bits 15 and 16
-        #overflow_next = (carry_next ⊻ ((stage.result & 0x8000) != 0))
+    # Move Ops
+    elseif op == :MOVE || op == :MOVI
+        stage.result = src1
+    elseif op == :MOVC
+        stage.result = flags.carry ? src1 : src2
+    elseif op == :MOVZ
+        stage.result = flags.zero ? src1 : src2
+    elseif op == :MOVCX0
+        stage.result = cxflags[1].flag ? src1 : src2
+    elseif op == :MOVCX1
+        stage.result = cxflags[2].flag ? src2 : src2
+
+    # Reduction operators.
+    elseif op == :ANDWORD
+        stage.result = (src1 == Int16(0xFFFF)) ? Int16(1) : Int16(0)
+    elseif op == :ORWORD
+        stage.result = (src1 == 0) ? Int16(0) : Int16(1)
+    elseif op == :XORWORD
+        stage.result = isodd(count_ones(src1)) ? Int16(1) : Int16(0)
+
+    # Special operators
+    elseif op == :BTRV
+        error("BTRV not implemented yet")
+    elseif op == :LSD
+        stage.result = (src1 < 0) ? count_ones(src1) - 1 : count_zeros(src1) - 1
+    elseif op == :LSDU
+        stage.result = count_zeros(src1)
+
+    # Shift operations
+    elseif op == :SHL
+        # Since we store numbers as signed, must check if src2 is negative.
+        result = (src2 >= 16 || src2 < 0) ? 0 : Int(src1) << src2
+        carry_next = (result & 0x10000) != 0
+        stage.result = Int16(result & 0xFFFF)
+    elseif op == :SHR
+        # Shift left 1 so we can capture the carry bit.
+        result = Int(reinterpret(UInt16, src1)) << 1
+        result = (src2 > 16 || src2 < 0) ? 0 : result >> src2
+        # Carry the low bit
+        carry_next = (result & 1) != 0
+        stage.result = Int16((result >> 1) & 0xFFFF)
+    elseif op == :SRA
+        result = Int(src1) << 1
+        result = (src2 > 16 || src2 < 0) ? 0 : result >> src2
+        carry_next = (result & 1) != 0
+        stage.result = Int16((result >> 1) & 0xFFFF)
+
+    # Shift left and carry
+    elseif op == :SHLC
+        # Insert carry on the right - preshift by 1
+        result = Int(src1) << 1 | Int(flags.carry)
+        result = (src2 >= 16 || src2 < 0) ? 0 : result << src2
+        # Because of the pre-shift, the new carry is at bit 17
+        carry_next = (result & 0x20000) != 0
+        stage.result = Int16((result >> 1) & 0xFFFF)
+
+    elseif op == :SHRC # Shift right and carry
+        # Insert carry-in on the left.
+        # Make room for carry out on the right by left-shifting by 1
+        result = (Int(reinterpret(UInt16, src1)) | (Int(flags.carry) << 16)) << 1
+        result = (src2 > 16 || src2 < 0) ? 0 : result >> src2
+        carry_next = (result & 1) != 0
+        stage.result = Int16((result >> 1) & 0xFFFF)
+
+    elseif op == :SRAC
+        result = (Int(src1) | Int(flags.carry) << 16) << 1
+        result = (src2 > 16 || src2 < 0) ? 0 : result >> src2
+        carry_next = (result & 1) != 0
+        stage.result = Int16((result >> 1) & 0xFFFF)
+
+    # Unrecognized instruction
     else
-        # Logic operations.
-        if op == :OR
-            stage.result = src1 | src2
-        elseif op == :AND
-            stage.result = src1 & src2
-        elseif op == :XOR
-            stage.result = src1 ⊻ src2
-
-        # Move Ops
-        elseif op == :MOVE || op == :MOVI
-            stage.result = src1
-        elseif op == :MOVC
-            stage.result = flags.carry ? src1 : src2
-        elseif op == :MOVZ
-            stage.result = flags.zero ? src1 : src2
-        elseif op == :MOVCX0
-            stage.result = cxflags[1].flag ? src1 : src2
-        elseif op == :MOVCX1
-            stage.result = cxflags[2].flag ? src2 : src2
-
-        # Reduction operators.
-        elseif op == :ANDWORD
-            stage.result = (src1 == Int16(0xFFFF)) ? Int16(1) : Int16(0)
-        elseif op == :ORWORD
-            stage.result = (src1 == 0) ? Int16(0) : Int16(1)
-        elseif op == :XORWORD
-            stage.result = isodd(count_ones(src1)) ? Int16(1) : Int16(0)
-
-        # Special operators
-        elseif op == :BTRV
-            error("BTRV not implemented yet")
-        elseif op == :LSD
-            stage.result = (src1 < 0) ? count_ones(src1) - 1 : count_zeros(src1) - 1
-        elseif op == :LSDU
-            stage.result = count_zeros(src1)
-
-        # Shift operations
-        elseif op == :SHL
-            # Since we store numbers as signed, must check if src2 is negative.
-            result = (src2 >= 16 || src2 < 0) ? 0 : Int(src1) << src2
-            carry_next = (result & 0x10000) != 0
-            stage.result = Int16(result & 0xFFFF)
-        elseif op == :SHR
-            # Shift left 1 so we can capture the carry bit.
-            result = Int(reinterpret(UInt16, src1)) << 1
-            result = (src2 > 16 || src2 < 0) ? 0 : result >> src2
-            # Carry the low bit
-            carry_next = (result & 1) != 0
-            stage.result = Int16((result >> 1) & 0xFFFF)
-        elseif op == :SRA
-            result = Int(src1) << 1
-            result = (src2 > 16 || src2 < 0) ? 0 : result >> src2
-            carry_next = (result & 1) != 0
-            stage.result = Int16((result >> 1) & 0xFFFF)
-
-        # Shift left and carry
-        elseif op == :SHLC
-            # Insert carry on the right - preshift by 1
-            result = Int(src1) << 1 | Int(flags.carry)
-            result = (src2 >= 16 || src2 < 0) ? 0 : result << src2
-            # Because of the pre-shift, the new carry is at bit 17
-            carry_next = (result & 0x20000) != 0
-            stage.result = Int16((result >> 1) & 0xFFFF)
-
-        elseif op == :SHRC # Shift right and carry
-            # Insert carry-in on the left.
-            # Make room for carry out on the right by left-shifting by 1 
-            result = (Int(reinterpret(UInt16, src1)) | (Int(flags.carry) << 16)) << 1
-            result = (src2 > 16 || src2 < 0) ? 0 : result >> src2
-            carry_next = (result & 1) != 0
-            stage.result = Int16((result >> 1) & 0xFFFF)
-
-        elseif op == :SRAC
-            result = (Int(src1) | Int(flags.carry) << 16) << 1
-            result = (src2 > 16 || src2 < 0) ? 0 : result >> src2
-            carry_next = (result & 1) != 0
-            stage.result = Int16((result >> 1) & 0xFFFF)
-
-        # Unrecognized instruction
-        else
-            error("Unrecognized op $op.")
-        end
+        error("Unrecognized op $op.")
     end
 
     # Update the zero and negative flats.
@@ -514,7 +618,7 @@ function stage4_alu(
         negative_next,
         overflow_next,
         zero_next,
-    ) 
+    )
 end
 
 """
@@ -524,7 +628,7 @@ Return `true` if branch instruction in `stage` was mispredicted. Return `true`
 otherwise.
 """
 function checkbranch(core::AsapCore, stage)
-    # Determine if this branch is predicted taken or not.     
+    # Determine if this branch is predicted taken or not.
     #
     # Assume that the check for the branch instruction has happened before entry
     # into this function.
@@ -553,21 +657,21 @@ function checkbranch(core::AsapCore, stage)
     # Do a BIT short-circuiting evaulation of everything.
     #
     # This is kind of messy - but not ... TOO .. bad ...
-    branch_taken_preinversion = 
+    branch_taken_preinversion =
         # Always bit check
-        (mask & (1 << 11) != 0) ||
+        isbitset(mask, 11) ||
         # ALU Flags
-        ((mask & (1 << 0) != 0) && aluflags.negative)   ||
-        ((mask & (1 << 1) != 0) && aluflags.zero)       ||
-        ((mask & (1 << 2) != 0) && aluflags.carry)      ||
-        ((mask & (1 << 3) != 0) && aluflags.overflow)   ||
-        ((mask & (1 << 4) != 0) && isempty(core.fifo[0])) ||
-        ((mask & (1 << 5) != 0) && isempty(core.fifo[1])) ||
-        ((mask & (1 << 8) != 0) && checkoutputs(core))
+        (isbitset(mask, 0) && aluflags.negative)   ||
+        (isbitset(mask, 1) && aluflags.zero)       ||
+        (isbitset(mask, 2) && aluflags.carry)      ||
+        (isbitset(mask, 3) && aluflags.overflow)   ||
+        (isbitset(mask, 4) && isempty(core.fifo[1])) || # NOTE: Converted to index 1
+        (isbitset(mask, 5) && isempty(core.fifo[2])) ||
+        (isbitset(mask, 8) && checkoutputs(core))
 
     # If the invert bit is set, do that to switch the branch evaluation.
-    branch_taken = isbitset(mask, 12) ? 
-        ~branch_taken_preinversion : 
+    branch_taken = isbitset(mask, 12) ?
+        ~branch_taken_preinversion :
         branch_taken_preinversion
 
     # Do a conditional execution check for this branch.
@@ -583,30 +687,13 @@ function checkbranch(core::AsapCore, stage)
     return mispredicted
 end
 
-isbitset(x::Integer, i) = (x & (1 << i)) != 0
-
-"""
-    checkoutputs(core::AsapCore)
-
-Return `true` if any of the output buffers selected by `core`'s obuf_mask is
-full. Otherwise, return `false`.
-"""
-function checkoutputs(core::AsapCore)
-    for (index, bit) in enumerate(core.obuf_mask)
-        bit || continue
-        if isfull(core.outputs[index])
-            return true
-        end
-    end
-    return false
-end
 
 #-------------------------------------------------------------------------------
 #                               Stage 5
 #-------------------------------------------------------------------------------
 function pipeline_stage5(core::AsapCore, stall::Bool, nop::Bool)
     # Skip if stalled or ALU. If given NOP, replace stage 5 with a NOP.
-    stage5 = core.pipelin3.stage5 
+    stage5 = core.pipeline.stage5
     instruction = stage5.instruction
     (stall || instruction.op == :NOP) && return nothing
 
@@ -623,35 +710,36 @@ function pipeline_stage5(core::AsapCore, stall::Bool, nop::Bool)
     end
 
     # Handle writeback to return address.
-    if instruction.dest == :ret
-        core.return_address = stage5.result
-    end
+    # Done in Stage 0
+    # if instruction.dest == :ret
+    #     core.return_address = stage5.result
+    # end
 
     # ----------------------------- #
     # --- Conditional Execution --- #
     # ----------------------------- #
 
     # Set flags
-    if instruction.csx
+    if instruction.cxflag == CX_SET
         # Get the conditional execution unit to use.
-        condexec = core.condexec[instruction.cx_index + 1]
+        condexec = core.condexec[instruction.cxindex + 1]
 
         setflag!(condexec, core, stage5)
 
-    # Check if this instruction has a conditional execution flag and if 
+    # Check if this instruction has a conditional execution flag and if
     # it should continue or not.
     #
     # CXT : Pass if flag is set.
-    elseif instruction.cxt
+    elseif instruction.cxflag == CX_TRUE
         # If the flag is not set, make this instruction a NOP
-        if !core.condexec[instruction.cx_index + 1].flag
+        if !core.condexec[instruction.cxindex + 1].flag
             stage5.instruction = NOP()
         end
 
     # CXF : Pass if flag is NOT set
-    elseif instruction.cxf
+    elseif instruction.cxflag == CX_FALSE
         # If the flag IS set, make this a NOP
-        if core.condexec[instruction.cx_index + 1].flag
+        if core.condexec[instruction.cxindex + 1].flag
             stage5.instruction = NOP()
         end
     end
@@ -704,9 +792,9 @@ function setflag!(condexec::CondExec, core::AsapCore, stage)
     # Just kind of brute force check these things.
 
     # Check OBUF masks
-    if mask & (1 << 8) != 0
+    if isbitset(mask, 8)
         # Iterate through the selected outputs of the obuf_mask.
-        # 
+        #
         # If any output is full, set bit 8 of the flags to zero and move on.
         for (index, bit) in enumerate(core.obuf_mask)
             bit || continue
@@ -718,27 +806,27 @@ function setflag!(condexec::CondExec, core::AsapCore, stage)
     end
 
     # Check IBUFS
-    if mask & (1 << 5) != 0
+    if isbitset(mask, 5)
         flags[5] = isempty(core.fifo[2])
     end
-    if mask & (1 << 4) != 0
+    if isbitset(mask, 4)
         flags[4] = isempty(core.fifo[1])
     end
 
     # Check ALU Flags.
     aluflags = core.aluflags
 
-    if mask & (1 << 3) != 0
+    if isbitset(mask, 3)
         flags[3] = aluflags.overflow
     end
-    if mask & (1 << 2) != 0
+    if isbitset(mask, 2)
         flags[2] = aluflags.carry
     end
-    if mask & (1 << 1) != 0
+    if isbitset(mask, 1)
         flags[1] = aluflags.zero
     end
-    if mask & (1 << 0) != 0
-        flags[0] = alufalgs.negative
+    if isbitset(mask, 0)
+        flags[0] = flags.negative
     end
 
     # Perfrom the reduction and set the flag.
@@ -769,27 +857,26 @@ pipeline_stage6(core::AsapCore, stall) = nothing
 # TODO: Implement the MAC operations.
 pipeline_stage7(core::AsapCore, stall) = nothing
 
-
 #-------------------------------------------------------------------------------
 #                               Stage 8
 #-------------------------------------------------------------------------------
 
 # Write back stage
-function pipeline_stage8(core::AsapCore, stall)
+function pipeline_stage8(core::AsapCore)
     stage6 = core.pipeline.stage6
     stage8 = core.pipeline.stage8
 
     # Select stage 8 for write back if is is not a NOP, it's a MAC operation,
     # and it's destination is not ":null"
-    if stage8.instruction.op != :NOP && 
+    if stage8.instruction.op != :NOP &&
         stage8.instruction.dest != :null &&
-        stage8.instruction.ismac
+        stage8.instruction.optype == MAC_TYPE
 
         writeback!(core, stage8)
 
     elseif stage6.instruction.op != :NOP &&
             stage6.instruction.dest != :null &&
-            !stage6.instruction.ismac
+            stage6.instruction.optype != MAC_TYPE
 
         writeback!(core, stage6)
 

@@ -6,16 +6,19 @@ function Base.show(io::IO, x::AsapInstruction)
         show_rpt(io, x)
         return
     end
+    show_basic(io, x)
+    show_options(io, x)
+    show_extra(io, x)
+end
 
+function show_basic(io::IO, x::AsapInstruction)
     # Show the op
     print(io, x.op, " ")
     # Print destinations and sources
     print(io, "$(stringvec(x.dest, x.dest_index)) ")
     print(io, "$(stringvec(x.src1, x.src1_index)) ")
     print(io, "$(stringvec(x.src2, x.src2_index)) ")
-
-    show_options(io, x)
-    show_extra(io, x)
+    return nothing
 end
 
 function show_options(io::IO, x::AsapInstruction)

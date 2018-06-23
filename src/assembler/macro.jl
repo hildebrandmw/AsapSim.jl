@@ -49,7 +49,10 @@ function convertcode(expr::Expr)
     # Split up the function into pieces.
     split_expr = splitdef(expr)
     # Extract intermediate instructions from the body of the code.
-    intermediate_instructions = getassembly(split_expr[:body])
+    # 
+    # Need to call "unblock" from the body of the function to handle the case
+    # where a program only have 1 instruction.
+    intermediate_instructions = getassembly(MacroTools.unblock(split_expr[:body]))
     # Encode the repeat blocks and remove the "END_RPT" instructions so 
     # addresses in the final vector are complete.
     handle_rpt!(intermediate_instructions)
@@ -112,7 +115,7 @@ function getassembly(expr)
         elseif @capture(ex, op_(args__))
             # Skip calls to functions that are not in the provided opcodes.
             # This help keep things like arithmetic for immediates.
-            if op in opcodes
+            if isop(op)
                 new_instruction = AsapIntermediate(
                     op, 
                     args, 
@@ -233,56 +236,14 @@ function expand(inst::AsapIntermediate, label_dict)
     # Key-word arguments to pass to the constructor for the instruction.
     kwargs = Vector{Pair{Symbol,Any}}([:op => inst.op])
 
-    # Look at the op code to determine what type of instruciton this is and
-    # how to decode it.
-    if inst.op in instructions_3operand
-        dest, dest_index = extract_ref(inst.args[1])
-        src1, src1_index = extract_ref(inst.args[2])
-        src2, src2_index = extract_ref(inst.args[3])
+    # Get the InstructionDefinition for this operation.
+    def = getdef(inst.op)
 
-        # Turn these into symbol pairs and add them to the collection of keyword
-        # argumends
-        @pairpush! kwargs dest dest_index src1 src1_index src2 src2_index
+    # Decode the instruction.
+    # Handle special cases first:
 
-        # Check if the destination is an output. If so, set this flag to true.
-        if dest in DestinationOutputs
-            push!(kwargs, (:dest_is_output => true))
-        end
-
-        # If optional flags are provided, slurp them up.
-        if length(inst.args) > 3
-            append!(kwargs, getoptions(inst.args[4:end]))
-        end
-
-    elseif inst.op in instructions_2operand
-        dest, dest_index = extract_ref(inst.args[1]) 
-        src1, src1_index = extract_ref(inst.args[2])
-
-        @pairpush! kwargs dest dest_index src1 src1_index
-
-        # Flag if destination is output.
-        if dest in DestinationOutputs
-            push!(kwargs, (:dest_is_output => true))
-        end
-
-        if length(inst.args) > 2
-            append!(kwargs, getoptions(inst.args[3:end]))
-        end
-        
-    elseif inst.op in instructions_1operand
-        src1, src1_index = extract_ref(inst.args[1])
-
-        @pairpush! kwargs src1 src1_index
-        append!(kwargs, getoptions(inst.args[2:end]))
-
-        # Get the end address from repeat blocks
-        if inst.op == :RPT
-            push!(kwargs, set_repeat_start(inst.repeat_start))
-            push!(kwargs, set_repeat_end(inst.repeat_end))
-        end
-
-    # Now to look at the more complicated instructions that use masks.
-    elseif inst.op in instructions_branch
+    # TODO: Rethink how to encode STALLS
+    if inst.op == :BR || inst.op == :BRL
         # Set the source to an immediate
         push!(kwargs, :src1 => :immediate)
         # Build the mask for the immediate
@@ -293,21 +254,54 @@ function expand(inst::AsapIntermediate, label_dict)
         # Get the rest of the options for this instruction.
         append!(kwargs, getoptions(inst.args[2:end]))
 
-    # Stall Instructions
-    elseif inst.op in instructions_stall
-        # Set source to an immediate and build the appropriate mask
-        push!(kwargs, :src1 => :immediate)
-        push!(kwargs, :src1_index => make_stall_mask(inst.args))
-
-        # Get any further options
-        append!(kwargs, getoptions(inst.args))
+    # General instruction decoding.
     else
-        error("Unrecognized op: $(inst.op).")
+        # If this instruction definition has a destination, extract that
+        # destination and remove it from the argument list.
+        if def.dest
+            dest, dest_index = extract_ref(first(inst.args))
+            @pairpush! kwargs dest dest_index
+            shift!(inst.args)
+
+            # Check if the destination is a core output. If so, mark this
+            # instruction.
+            if dest in DestinationOutputs
+                push!(kwargs, (:dest_is_output => true))
+            end
+        end
+
+        # Parse out src1
+        if def.src1
+            src1, src1_index = extract_ref(first(inst.args))
+            @pairpush! kwargs src1 src1_index
+            shift!(inst.args)
+        end
+
+        # Parse out src2
+        if def.src2
+            src2, src2_index = extract_ref(first(inst.args))
+            @pairpush! kwargs src2 src2_index
+            shift!(inst.args)
+        end
+
+        # Get the options for this instruction.
+        append!(kwargs, getoptions(inst.args))
+
+        # Handle special instructions
+        if inst.op == :RPT
+            push!(kwargs, set_repeat_start(inst.repeat_start))
+            push!(kwargs, set_repeat_end(inst.repeat_end))
+        end
     end
 
-    # Finally, get extra data associated with the operation.
-    append!(kwargs, opdata(inst.op))
-
+    # Mark op-type and some special properties.
+    push!(kwargs, :optype => def.optype)
+    if def.signed
+        push!(kwargs, :signed => true)
+    end
+    if def.saturate
+        push!(kwargs, :saturate => true)
+    end
     return kwargs
 end
 

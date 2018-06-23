@@ -9,7 +9,7 @@ TestBundle() = TestBundle(Int16[], Int16[], Bool[])
 
 @testset "ALU Tests" begin
     # Set this flag to benchmark ALU Operations
-    benchmark = true
+    benchmark = false
 
     # This is going to be painful, but necessary. Have to check all of the ALU 
     # type ops
@@ -55,10 +55,10 @@ TestBundle() = TestBundle(Int16[], Int16[], Bool[])
             # Edit the carry flag.
             aluflags.carry = cin
             if benchmark
-                b = @benchmark AsapSim.stage_4_alu($stage, $aluflags, $condexec)
+                b = @benchmark AsapSim.stage4_alu($stage, $aluflags, $condexec)
                 println("Average time for $(stage.instruction.op): $(mean(b.times))")
             end
-            newflags = AsapSim.stage_4_alu(stage, aluflags, condexec)
+            newflags = AsapSim.stage4_alu(stage, aluflags, condexec)
 
             # Next the "op" twice so it works correctly if op is "+" or "-".
             if T == Unsigned
@@ -100,10 +100,13 @@ TestBundle() = TestBundle(Int16[], Int16[], Bool[])
     test = TestBundle()
 
     @testset "Arithmetic" begin
+        max_s = typemax(Int16)
+        min_s = typemin(Int16)
+
         # Lets start going down the list.
 
         # --- ADDSU / ADDU ---
-        stage.instruction = AsapInstruction(op = :ADDSU, addsub = true)
+        stage.instruction = AsapInstruction(op = :ADDSU)
 
         # Loop through a few operand pairs, making sure to have a mix of numbers 
         # that would be negative 16 bit values is interpreted as signed numbers.
@@ -114,18 +117,19 @@ TestBundle() = TestBundle(Int16[], Int16[], Bool[])
         op_tester(Unsigned, +, stage, test, benchmark = benchmark)
 
         # --- ADDCSU / ADDCU ---
-        stage.instruction = AsapInstruction(op = :ADDCSU, addsub = true)
+        stage.instruction = AsapInstruction(op = :ADDCSU)
         test.src1 = reinterpret.(Int16, [0xFFFE, 0xFFFF, 0x0000, 0x0001, 0x0001])
         test.src2 = reinterpret.(Int16, [0x0000, 0x0000, 0x0000, 0xFFFF, 0xFFFE])
         test.cin  = [true, true, true, false, true]
         op_tester(Unsigned, +, stage, test, benchmark = benchmark)
 
         # --- ADDS / ADD ---
-        stage.instruction = AsapInstruction(op = :ADD, addsub = true)
-        test.src1 = [ -1  , 2^15 - 1, -2^15,    0]
-        test.src2 = [-2^15, 3       , 2^15 - 1, -2^15] 
+        stage.instruction = AsapInstruction(op = :ADD)
+        test.src1 = [ -1  , max_s , min_s,    0]
+        test.src2 = [min_s, 3     , max_s, min_s] 
         test.cin  = zeros(Bool, length(test.src1))
         op_tester(Signed, +, stage, test, benchmark = benchmark)
+
     end
 
 

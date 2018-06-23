@@ -21,7 +21,7 @@ end
 #
 # * Think about write-back timings.
 
-@with_kw mutable struct AddressGenerator
+@with_kw_noshow mutable struct AddressGenerator
     start       ::UInt8 = 0
     stop        ::UInt8 = 0
     current     ::UInt8 = 0
@@ -34,14 +34,14 @@ end
 end
 
 function set!(ag::AddressGenerator, start, stop)
-    ag.start = Int16(start)
-    ag.stop  = Int16(stop)
+    ag.start = start
+    ag.stop  = stop
     ag.current = ag.start
     return nothing
 end
 
 function set_stride!(ag::AddressGenerator, stride)
-    ag.stride = Int16(stride)
+    ag.stride = stride
     return nothing
 end
 
@@ -75,7 +75,7 @@ CondExec() = CondExec(false, 0, :OR, false)
 # For keeping track of instructions through the pipeline.
 # Essentially just a wrapper for the instruction with an extra slot for the
 # result.
-@with_kw mutable struct PipelineEntry
+@with_kw_noshow mutable struct PipelineEntry
     instruction :: AsapInstruction = NOP()
     # The actual source and result values
     src1_value  :: Int16 = 0
@@ -89,6 +89,9 @@ CondExec() = CondExec(false, 0, :OR, false)
     old_pc_plus_1      :: Int64 = 0
     old_repeat_count   :: Int64 = 0
 end
+
+
+
 
 PipelineEntry(i::AsapInstruction) = PipelineEntry(instruction = i)
 function PipelineEntry(core, inst::AsapInstruction)
@@ -126,6 +129,23 @@ AsapPipeline() = AsapPipeline(
     PipelineEntry(),
 )
 
+function Base.show(io::IO, p::AsapPipeline)
+    print(io, "Stage 2: ")
+    show(io, p.stage2)
+    print(io, "Stage 3: ")
+    show(io, p.stage3)
+    print(io, "Stage 4: ")
+    show(io, p.stage4)
+    print(io, "Stage 5: ")
+    show(io, p.stage5)
+    print(io, "Stage 6: ")
+    show(io, p.stage6)
+    print(io, "Stage 7: ")
+    show(io, p.stage7)
+    print(io, "Stage 8: ")
+    show(io, p.stage8)
+end
+
 # Basic AsapCore. Parameterize based on
 #
 # 1. The type of FIFO - allows for injection of TestFifos to help with tests
@@ -133,7 +153,12 @@ AsapPipeline() = AsapPipeline(
     # --- Timing Control --- #
 
     # Clock period - for registering updates.
-    clock_period :: Int64
+    # This number is inherently meaningless, but should usually be interpreted
+    # as PS.
+    #
+    # Note that if interpreting this as PS ... a default value of 1 does not
+    # really make a whole lot of sense.
+    clock_period ::Int64 = 1
 
     # --- Program --- #
 
@@ -146,9 +171,9 @@ AsapPipeline() = AsapPipeline(
     pc                  :: Int64 = 1
 
     # Hardware registers holding information about repeat values.
-    repeat_count        :: Int64 = 0
-    repeat_block_start  :: Int64 = 0
-    repeat_block_end    :: Int64 = 0
+    repeat_count  :: Int64 = 0
+    repeat_start  :: Int64 = 0
+    repeat_end    :: Int64 = 0
 
     # Hardware return address buffer.
     return_address :: Int16 = 0
@@ -159,16 +184,6 @@ AsapPipeline() = AsapPipeline(
 
     # Mispredicted branch - done in S4
     branch_mispredict :: Bool = false
-
-    # Stall signals.
-    # Note that stages 0 and 1 stall together
-    # Stages 3 and 4 stall together
-    # Stages 5, 6, 7, 8 stall together
-    # TODO: Where does stage 2 stall.
-    stall_01 :: Bool = false
-    stall_2  :: Bool = false
-    stall_34 :: Bool = false
-    stall_5678 :: Bool = false
 
     # ---------------------- #
     # Input and Output Fifos #
@@ -224,13 +239,6 @@ AsapPipeline() = AsapPipeline(
     # ----------- #
 
     dmem::Vector{Int16} = zeros(Int16, 256)
-
-    # --- Pipeline Bypass Registers --- #
-
-    # NOTE: Get these straight from the instructions in the pipeline.
-    # result_s5 :: Int16 = zero(Int16)
-    # result_s6 :: Int16 = zero(Int16)
-    # result_s8 :: Int16 = zero(Int16)
 
     # -------- #
     # Pipeline #
@@ -436,12 +444,12 @@ end
 function stall_check_ibuf(core, index, default::Bool) :: Bool
     # If the default value is to stall, return false if the given fifo is
     # not empty to go against the stall.
-    if default == true && !isempty(core.fifos[index]) 
+    if default == true && isreadready(core.fifos[index]) 
         return false
 
     # Otherwise, if the default is not to stall, return "true" if the fifo is
     # empty to indicate the core should stall
-    elseif default == false && isempty(core.fifos[index]) 
+    elseif default == false && !isreadready(core.fifos[index]) 
         return true
 
     # If the above conditions are not met, just return the default.
@@ -453,11 +461,27 @@ end
 function stall_check_obuf(core, index, default :: Bool) :: Bool
     # Logic is similar to the ibuf check, but looks for full fifos instead of
     # empty fifos.
-    if default == true && !isfull(core.outputs[index])
+    if default == true && iswriteready(core.outputs[index])
         return false
-    elseif default == false && isfull(core.outputs[index])
+    elseif default == false && !iswriteready(core.outputs[index])
         return true
     else
         return default
     end
+end
+
+"""
+    checkoutputs(core::AsapCore)
+
+Return `true` if any of the output buffers selected by `core`'s obuf_mask is
+full. Otherwise, return `false`.
+"""
+function checkoutputs(core::AsapCore)
+    for (index, bit) in enumerate(core.obuf_mask)
+        bit || continue
+        if !iswriteready(core.outputs[index])
+            return true
+        end
+    end
+    return false
 end

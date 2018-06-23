@@ -9,9 +9,19 @@ import DataStructures
 using MacroTools
 using BenchmarkTools
 
-#include("assembler/macro.jl")
-#include("assembler/test_program.jl")
-#
-#include("fifo.jl")
-#include("core/stall.jl")
+# Include the TestPrograms package, which contains a collection of programs
+# testing portions of the simulator.
+include("TestPrograms/TestPrograms.jl")
+using .TestPrograms
+
+# Assembler tests
+include("assembler/macro.jl")
+include("assembler/test_program.jl")
+
+# Fifo Tests
+include("fifo.jl")
+
+# Core Component Tests
+include("core/stall.jl")
 include("core/alu.jl")
+include("core/programs.jl")

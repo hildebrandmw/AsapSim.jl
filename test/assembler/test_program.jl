@@ -102,5 +102,13 @@ label_dict = AsapSim.findlabels(intermediates)
 @test haskey(label_dict, Symbol(":GOBACK"))
 @test label_dict[Symbol(":GOBACK")] == 8
 
+# Test to make sure that single-line programs parse correctly.
+# Originally, if a program consisted of a single instruction, that instruction
+# would be duplicated accidentally.
+@asap4asm function single_function()
+    MOVI(dmem[0], 100)
+end
+@test length(single_function()) == 1
+
 
 end
