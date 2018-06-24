@@ -158,7 +158,7 @@ function handle_rpt!(intermediates::Vector{AsapIntermediate})
     # Iterate through each element of the intermediate instructions. 
     index_of_last_rpt = 0
     index = 1
-    while index < length(intermediates)
+    while index <= length(intermediates)
         if intermediates[index].op == :END_RPT
             # Save the index of the instruction before this as the end of the
             # repeat block and delete this op from the instruction vector.

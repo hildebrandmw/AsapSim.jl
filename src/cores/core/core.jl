@@ -3,7 +3,7 @@
 # Make this a struct with an API to possibly reimplement as a single integer
 # with bit-twiddling instead of a struct of Bools. Probably not needed but
 # may save some space in the future.
-@with_kw mutable struct ALUFlags
+@with_kw_noshow mutable struct ALUFlags
     carry       :: Bool = false
     negative    :: Bool = false
     overflow    :: Bool = false
@@ -75,6 +75,9 @@ CondExec() = CondExec(false, 0, :OR, false)
 # For keeping track of instructions through the pipeline.
 # Essentially just a wrapper for the instruction with an extra slot for the
 # result.
+#
+# TODO: Think about making this immutable. Benchmark to see if it decreases
+# allocation not.
 @with_kw_noshow mutable struct PipelineEntry
     instruction :: AsapInstruction = NOP()
     # The actual source and result values
@@ -89,9 +92,6 @@ CondExec() = CondExec(false, 0, :OR, false)
     old_pc_plus_1      :: Int64 = 0
     old_repeat_count   :: Int64 = 0
 end
-
-
-
 
 PipelineEntry(i::AsapInstruction) = PipelineEntry(instruction = i)
 function PipelineEntry(core, inst::AsapInstruction)
@@ -128,23 +128,6 @@ AsapPipeline() = AsapPipeline(
     PipelineEntry(),
     PipelineEntry(),
 )
-
-function Base.show(io::IO, p::AsapPipeline)
-    print(io, "Stage 2: ")
-    show(io, p.stage2)
-    print(io, "Stage 3: ")
-    show(io, p.stage3)
-    print(io, "Stage 4: ")
-    show(io, p.stage4)
-    print(io, "Stage 5: ")
-    show(io, p.stage5)
-    print(io, "Stage 6: ")
-    show(io, p.stage6)
-    print(io, "Stage 7: ")
-    show(io, p.stage7)
-    print(io, "Stage 8: ")
-    show(io, p.stage8)
-end
 
 # Basic AsapCore. Parameterize based on
 #
@@ -260,6 +243,7 @@ Parameters:
 
 * `stall_01` - Stall stages 0 and 1. Happens if stalled on a fifo or if stage
     2 has pending NOPS to insert.
+* `nop_2` - Insert NOPs into Stage 2. Happens when there are pending NOPs.
 * `stall_234` - Stall stages 2, 3, and 4. Happens if stalled on fifo.
 * `stall_567` - Stall stages 5, 6, and 7. Happens if stalled on a fifo and none
     of the destinations in stages 5, 6, and 7 is an output.
@@ -268,6 +252,7 @@ Parameters:
 """
 struct StallSignals
     stall_01  :: Bool
+    nop_2     :: Bool
     stall_234 :: Bool 
     stall_567 :: Bool
     nop_5     :: Bool
@@ -279,6 +264,7 @@ function stall_check(core::AsapCore)
 
     # Default stall signals to "false"
     stall_01 = false
+    nop_2 = false
     stall_234 = false
     stall_567 = false
     nop_5 = false
@@ -300,9 +286,15 @@ function stall_check(core::AsapCore)
             stall_567 = true
         end
 
-    # Otherwise, stall stages 0 and 1 if stage 2 has pending NOPs
+    # Otherwise, stall stages 0 and 1 if stage 2 has pending NOPs or will
+    # request NOPs this cycle.
     else
-        if core.pending_nops > 0
+        # Like in the RTL for asap4, if pending nops = 1, we're on the last
+        # NOP, so we can stop the NOP signal then.
+        if core.pending_nops > 1
+            stall_01 = true
+            nop_2 = true
+        elseif core.pipeline.stage2.instruction.nops > 0
             stall_01 = true
         end
     end
@@ -310,6 +302,7 @@ function stall_check(core::AsapCore)
     # Return a collection of stall signals.
     return StallSignals(
         stall_01,
+        nop_2,
         stall_234,
         stall_567,
         nop_5,

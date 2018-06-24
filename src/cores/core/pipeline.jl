@@ -24,7 +24,7 @@ function update!(core::AsapCore)
     # At the end, we will have to shift these entries in the pipeline according
     # to the set stall signals.
     pipeline_stage1(core, stalls.stall_01)
-    pipeline_stage2(core, stalls.stall_234)
+    pipeline_stage2(core, stalls.stall_234, stalls.nop_2)
     pipeline_stage3(core, stalls.stall_234)
 
     # Stage 4 sets new ALU Flags. Since these flags are used in Stage 5 to
@@ -143,7 +143,6 @@ function pipeline_stage0(core::AsapCore, stall::Bool)
     # Compute the next PC if no branch happens
     next_pc_unbranched = (!stall && repeat_loop) ? core.repeat_start : core.pc + 1
 
-
     # --------------------- #
     # Update repeat counter #
     # --------------------- #
@@ -156,7 +155,7 @@ function pipeline_stage0(core::AsapCore, stall::Bool)
     # Check if stage 4 is a RPT instruction. If so, grab the value of the repeat
     # counter and store it.
     elseif stage4.instruction.op == :RPT
-        repeat_count_next = stage4.src1_val
+        repeat_count_next = stage4.src1_value
 
     # Check if PC is equal to the current repeat end block and there are pending
     # repeats. If so, decrement the repeat counter.
@@ -169,7 +168,7 @@ function pipeline_stage0(core::AsapCore, stall::Bool)
     # ---------------------------------- #
     if stage4.instruction.op == :RPT
         repeat_start_next = repeat_start(stage4.instruction)
-        repeat_end_next = repeat_end(stage4.insruction)
+        repeat_end_next = repeat_end(stage4.instruction)
     end
 
     # --------------------- #
@@ -250,6 +249,7 @@ end
 function pipeline_stage1(core::AsapCore, stall::Bool)
     # Read instruction from pipestage.
     if !stall
+        # TODO: Make this correct.
         if core.pc <= length(core.program)
             instruction = core.program[core.pc]
         else
@@ -257,6 +257,7 @@ function pipeline_stage1(core::AsapCore, stall::Bool)
         end
         # Insert this instruction into the pipeline.
         core.pipeline.stage1 = PipelineEntry(core, instruction)
+
     end
 end
 
@@ -310,33 +311,48 @@ end
 
 # TODO: Do NOP insertion
 # TODO: Early kill for conditional check.
-function pipeline_stage2(core::AsapCore, stall::Bool)
+function pipeline_stage2(core::AsapCore, stall::Bool, nop::Bool)
     # Don't do anything if stalled.
     stall && return nothing
 
-    # Do pointer dereference checks.
-    # If any source or destination is targeting an address generator or hardware
-    # pointer, get the DMEM address of that pointer and convert the instruction
-    # into a DMEM instruction.
     stage2 = core.pipeline.stage2
     instruction = stage2.instruction
 
-    # Do dereference checks for each operand of the instruction.
-    src1, src1_index = dereference(core, instruction.src1, instruction.src1_index)
-    src2, src2_index = dereference(core, instruction.src2, instruction.src2_index)
-    dest, dest_index = dereference(core, instruction.dest, instruction.dest_index)
+    # Check if we're supposed to insert NOPs. If so, just do that and
+    # return.
+    if nop
+        core.pipeline.stage2 = PipelineEntry()
+        core.pending_nops -= 1
 
-    # Update all of the address generators that have been read from this cycle.
-    for ag in core.address_generators
-        increment!(ag)
+    else
+        # Do pointer dereference checks.
+        # If any source or destination is targeting an address generator or hardware
+        # pointer, get the DMEM address of that pointer and convert the instruction
+        # into a DMEM instruction.
+
+        # Do dereference checks for each operand of the instruction.
+        src1, src1_index = dereference(core, instruction.src1, instruction.src1_index)
+        src2, src2_index = dereference(core, instruction.src2, instruction.src2_index)
+        dest, dest_index = dereference(core, instruction.dest, instruction.dest_index)
+
+        # Update all of the address generators that have been read from this cycle.
+        for ag in core.address_generators
+            increment!(ag)
+        end
+
+        # Update the instruction in the pipeline.
+        operands = SrcDestCollection(src1, src1_index, src2, src2_index, dest, dest_index)
+        new_instruction = reconstruct(instruction, operands)
+        # Replace the instruction in the pipeline with possibly dereferenced version
+        # of the instruction.
+        core.pipeline.stage2.instruction = new_instruction
+
+        # Check if this instruction requests any NOPs.
+        # If so, modify the the NOP counter.
+        if instruction.nops > 0
+            core.pending_nops = instruction.nops
+        end
     end
-
-    # Update the instruction in the pipeline.
-    operands = SrcDestCollection(src1, src1_index, src2, src2_index, dest, dest_index)
-    new_instruction = reconstruct(instruction, operands)
-    # Replace the instruction in the pipeline with possibly dereferenced version
-    # of the instruction.
-    core.pipeline.stage2.instruction = new_instruction
 
     return nothing
 end
@@ -364,7 +380,7 @@ function stage3_read(core::AsapCore, operand::Symbol, index::T) where T
     # Check accumulator
     elseif operand == :acc
         # Take the lower 16-bits of the accumulator.
-        return_value = reinterpret(Int16, UInt16(core.accumulator & 0xFFFF))
+        return_value = signed(UInt16(core.accumulator & 0xFFFF))
 
     # Check bypass registers 3 and 5
     elseif operand == :bypass
@@ -373,7 +389,7 @@ function stage3_read(core::AsapCore, operand::Symbol, index::T) where T
             return_value = core.pipeline.stage6.result
         elseif index == 5
             # Get the result from stage 8
-            return_value = core.pipeline.srage8.result
+            return_value = core.pipeline.stage8.result
         end
 
     # Check if using the return address.
@@ -467,7 +483,7 @@ function stage4_read(core::AsapCore, operand::Symbol, index::T, default::U) wher
         elseif index == 2
             return_value = core.pipeline.stage6.result
         elseif index == 4
-            return_value == core.pipeline.stage8.result
+            return_value = core.pipeline.stage8.result
         end
     end
 
@@ -477,7 +493,7 @@ end
 # Helper function.
 function asap_add(x::Int16, y::Int16)
     # Check carry out
-    cout = (typemax(UInt16) - reinterpret(UInt16, x)) < reinterpret(UInt16, y)
+    cout = (typemax(UInt16) - unsigned(x)) < unsigned(y)
     result = x + y
     overflow = (x > 0 && y > 0 && result < 0) || (x < 0 && y < 0 && result > 0)
     # Return sum and carry-out. Since all arithmetic in Julia is in 2's
@@ -569,7 +585,7 @@ function stage4_alu(
         stage.result = Int16(result & 0xFFFF)
     elseif op == :SHR
         # Shift left 1 so we can capture the carry bit.
-        result = Int(reinterpret(UInt16, src1)) << 1
+        result = Int(unsigned(src1)) << 1
         result = (src2 > 16 || src2 < 0) ? 0 : result >> src2
         # Carry the low bit
         carry_next = (result & 1) != 0
@@ -592,7 +608,7 @@ function stage4_alu(
     elseif op == :SHRC # Shift right and carry
         # Insert carry-in on the left.
         # Make room for carry out on the right by left-shifting by 1
-        result = (Int(reinterpret(UInt16, src1)) | (Int(flags.carry) << 16)) << 1
+        result = (Int(unsigned(src1)) | (Int(flags.carry) << 16)) << 1
         result = (src2 > 16 || src2 < 0) ? 0 : result >> src2
         carry_next = (result & 1) != 0
         stage.result = Int16((result >> 1) & 0xFFFF)
@@ -764,7 +780,7 @@ function saturate!(stage::PipelineEntry, aluflags::ALUFlags)
         end
     else
         if aluflags.carry == true
-            stage.result = reinterpret(Int16, typemax(UInt16))
+            stage.result = signed(typemax(UInt16))
         end
     end
     return nothing
@@ -853,9 +869,134 @@ pipeline_stage6(core::AsapCore, stall) = nothing
 #-------------------------------------------------------------------------------
 #                               Stage 7
 #-------------------------------------------------------------------------------
+multiply(::Type{Signed}, a, b) = Int(signed(a)) * Int(signed(b))
+multiply(::Type{Unsigned}, a, b) = UInt(unsigned(a)) * UInt(unsigned(b))
 
-# TODO: Implement the MAC operations.
-pipeline_stage7(core::AsapCore, stall) = nothing
+low(x) = signed(UInt16(x & 0xFFFF))
+high(x) = signed(UInt16((x >> 16) & 0xFFFF))
+
+function pipeline_stage7(core::AsapCore, stall)
+    # Get the start of pipe stage and instruction.
+    stage7 = core.pipeline.stage7
+    instruction = stage7.instruction
+
+    # Don't do anything if stalled.
+    (stall || instruction.op == :NOP) && return nothing
+
+    # Multiply if the instruction is of the correct type.
+    if instruction.optype == MAC_TYPE
+        core.accumulator = stage4567_multiply(stage7, core.accumulator)
+    end
+    return nothing
+end
+
+function stage4567_multiply(stage, accumulator)
+    # Another long list of conditionals depending on OP type.
+
+    instruction = stage.instruction
+    op = instruction.op
+    src1_value = stage.src1_value
+    src2_value = stage.src2_value
+    # Signed Multiply - return low
+    if op == :MULTL
+        stage.result = low(multiply(Signed, src1_value, src2_value))
+    # Unsigned multiply - return low
+    elseif op == :MULTLU
+        stage.result = low(multiply(Unsigned, src1_value, src2_value))
+    # Signed multiply - return high
+    elseif op == :MULTH
+        stage.result = high(multiply(Signed, src1_value, src2_value))
+    # Unsigned multiply - return high
+    elseif op == :MULTHU
+        stage.result = high(multiply(Unsigned, src1_value, src2_value))
+    # Signed multiply accumulate. Return low bits of accumulator.
+    elseif op == :MACL
+        # Since the accumulator is signed, just do normal arithmetic with it.
+        accumulator += multiply(Signed, src1_value, src2_value)
+        stage.result = low(accumulator)
+    # Unsigned multiply accumulate. Return low bits.
+    elseif op == :MACLU
+        unsigned_result = multiply(Unsigned, src1_value, src2_value) + 
+            unsigned(accumulator)
+
+        accumulator = signed(unsigned_result)
+        stage.result = low(accumulator)
+    # Signed multiply accumulate. Return high bits of accumulator.
+    elseif op == :MACH
+        accumulator += multiply(Signed, src1_value, src2_value)
+        stage.result = high(accumulator)
+    # Unsigned multiply accumulate. Return high bits.
+    elseif op == :MACHU
+        unsigned_result = multiply(Unsigned, src1_value, src2_value) + 
+            unsigned(accumulator)
+
+        accumulator = signed(unsigned_result)
+        stage.result = high(accumulator)
+
+    # Signed multiply accumulate, wipe accumulator. Return low.
+    elseif op == :MACCL
+        accumulator = multiply(Signed, src1_value, src2_value)
+        stage.result = low(accumulator)
+
+    # Unsigned multiply accumulate, wipe accumulator. Return low.
+    elseif op == :MACCLU
+        core.accumulaor = signed(multiply(Unsigned, src1_value, src2_value))
+        stage.result = low(accumulator)
+
+    # Signed multiply accumulate, wipe accumulator. Return high.
+    elseif op == :MACCH
+        accumulator = multiply(Signed, src1_value, src2_value)
+        stage.result = high(accumulator)
+
+    # Unsigned multiply accumulate, wipe accumulator. Return high.
+    elseif op == :MACCHU
+        core.accumulaor = signed(multiply(Unsigned, src1_value, src2_value))
+        stage.result = high(accumulator)
+
+    # --- Accumulator shifts
+    # Pick one of 4 shift amounts depending on src1_value
+    # 0: >> 1
+    # 1: >> 8
+    # 2: >> 16
+    # 3: << 16
+    # Always return low bits of accumulator.
+
+    # Signed shift - preserve sign bits.
+    elseif op == :ACCSH
+        if src1_value == 0
+            accumulator >>= 1
+        elseif src1_value == 1
+            accumulator >>= 8
+        elseif src1_value == 2
+            accumulator >>= 16
+        elseif src1_value == 3
+            accumulator <<= 16
+        end
+
+    # Unsigned shift. Use the ">>>" operator.
+    elseif op == :ACCSHU
+        if src1_value == 0
+            accumulator >>>= 1
+        elseif src1_value == 1
+            accumulator >>>= 8
+        elseif src1_value == 2
+            accumulator >>>= 16
+        elseif src1_value == 3
+            accumulator <<= 16
+        end
+    else
+        error("Unrecognized MAC op: $(op)")
+    end
+
+    # Truncate the accumulator to only use 4 bits. Do this by shifting left
+    # then arithmetic shifting right to preserve signed bits.
+    #
+    # NOTE: The behavior of this might not quite be right is an unsigned 
+    # instruction follows a signed instruction ... 
+    accumulator = ((accumulator << 64 - 40) >> (64 - 40))
+
+    return accumulator
+end
 
 #-------------------------------------------------------------------------------
 #                               Stage 8

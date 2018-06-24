@@ -1,10 +1,11 @@
+function runfor(core, cycles)
+    for _ in 1:cycles
+        AsapSim.update!(core)
+    end
+end
+
 @testset "Running Source Tests" begin
 
-    function runfor(core, cycles)
-        for _ in 1:cycles
-            AsapSim.update!(core)
-        end
-    end
     
     # ------------------------- #
     # --- Run source tests  --- #
@@ -42,6 +43,22 @@
         runfor(core, 10)
         @test core.dmem[1] == 10
     end
+
+    # Bypass 4
+    println("Testing Bypass Register: 4")
+    core = test_core(TestPrograms.bypass_4())
+    runfor(core, 15)
+    @test core.dmem[1] == 100
+    @test core.dmem[2] == 100 * 10
+    @test core.dmem[3] == 2 * 100 * 10
+
+    # Bypass 5
+    println("Testing Bypass Register: 5")
+    core = test_core(TestPrograms.bypass_5())
+    runfor(core, 15)
+    @test core.dmem[1] == 100
+    @test core.dmem[2] == 100 * 10
+    @test core.dmem[3] == 2 * 100 * 10
 
     # -- Test pointer dereference -- #
     core = test_core(TestPrograms.pointers())
@@ -99,4 +116,21 @@
     @test core.dmem[2] == fifo_value_1
     @test core.dmem[3] == fifo_value_2
     @test core.dmem[4] == fifo_value_2
+end
+
+@testset "Running Repeat Test" begin
+    core = test_core(TestPrograms.repeat_1())
+    runfor(core, 20)
+    @test core.dmem[1] == 10
+
+    core = test_core(TestPrograms.repeat_2())
+    runfor(core, 40)
+    @test core.dmem[1] == 10
+    @test core.dmem[2] == 10
+
+    core = test_core(TestPrograms.repeat_3())
+    runfor(core, 60)
+    @test core.dmem[1] == 10
+    @test core.dmem[2] == 10
+    @test core.dmem[3] == 10
 end

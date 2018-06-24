@@ -7,9 +7,22 @@ function summarize(core::AsapCore)
     # Display various processor state.
     show_hwstate(core)
     println()
+    show_condexec(core)
+    println()
     show_io(core)
     println()
     show_pipeline(core)
+end
+
+################################################################################
+#                           SHOW ALU FLAGS
+################################################################################
+function Base.show(io::IO, f::ALUFlags)
+    print(io, "ALU Flags: ")
+    print(io, "C = $(f.carry), ")
+    print(io, "N = $(f.negative), ")
+    print(io, "O = $(f.overflow), ")
+    print(io, "Z = $(f.zero) ")
 end
 
 ################################################################################
@@ -31,6 +44,37 @@ end
 function Base.show(io::IO, ag::AddressGenerator)
     # start:step:stop -- current
     print(io, "$(ag.start):$(ag.stride):$(ag.stop) -- $(ag.current)")
+end
+
+################################################################################
+#                        SHOW CONDITIONAL EXECUTION
+################################################################################
+function Base.show(io::IO, c::CondExec)
+    print(io, "Flag = $(c.flag), ")
+    # Mask has 14 meaningful bits. Show the bits directly.
+    print(io, "Mask = $(bits(c.mask)[end - 14:end]), ")
+    # Print Reduction
+    print(io, "Reduction = $(c.unary_op), ")
+
+    # Interpret the bits for faster decoding.
+    mask = c.mask
+
+    # Only print out the summary if there's something to show.
+    print(io, "Mask Summary: ")
+    isbitset(mask, 13) && print(io, "EK ")
+    # Bits 11 and 12 encode the unary op, which is already diaplayed
+    isbitset(mask, 10) && print(io, "MO ")
+    isbitset(mask,  9) && print(io, "PO ")
+    isbitset(mask,  8) && print(io, "OBUF ")
+    isbitset(mask,  7) && print(io, "MI ")
+    isbitset(mask,  6) && print(io, "PI ")
+    isbitset(mask,  5) && print(io, "IBUF1 ")
+    isbitset(mask,  4) && print(io, "IBUF0 ")
+    isbitset(mask,  3) && print(io, "O ")
+    isbitset(mask,  2) && print(io, "C ")
+    isbitset(mask,  1) && print(io, "Z ")
+    isbitset(mask,  0) && print(io, "N ")
+    
 end
 
 ################################################################################
@@ -74,6 +118,13 @@ function show_hwstate(core::AsapCore)
     # Print the AutoAlign object
     print(STDOUT, aa)
 
+    # --- ALU Flags and Accumulator --- #
+    println()
+    println(core.aluflags)
+    println()
+    println("Accumulator: $(core.accumulator)")
+    println()
+
     # Print out branch mispredict
     if core.branch_mispredict
         print_with_color(:red, "Branch Mispredicted\n")
@@ -81,6 +132,15 @@ function show_hwstate(core::AsapCore)
         print_with_color(:green, "No Branch Mispredict\n")
     end
 end
+
+function show_condexec(core::AsapCore)
+    print_with_color(:white, "Conditional Execution\n", bold = true)
+    for (index, condexec) in enumerate(core.condexec)
+        println("CX$(index-1): $condexec")
+    end
+end
+
+
 
 # Show the status of the input and output fifos.
 function show_io(core::AsapCore)
@@ -90,6 +150,7 @@ function show_io(core::AsapCore)
         print_with_color(color, "Fifo $(index -1): $(read_occupancy(fifo))\n")
     end
 
+    println()
     print_with_color(:white, "Output Fifo Occupancy\n"; bold = true)
     for (k,v) in core.outputs
         println("Output $k: $(write_occupancy(v))")
@@ -97,6 +158,19 @@ function show_io(core::AsapCore)
     # Declare boldly if no output fifos have been connected.
     if length(core.outputs) == 0
         print_with_color(:red, "No Connected Outputs\n")
+    end
+
+    # --- Show the output mask --- #
+    println()
+    print_with_color(:white, "OBUF Mask\n", bold = true)
+
+    # Convert the obuf mask to a string
+    obuf_mask_string = join([x ? "1" : "0" for x in core.obuf_mask])
+    println(obuf_mask_string)
+
+    # Print out selected indices for easier viewing.
+    for (index, val) in enumerate(core.obuf_mask)
+        val && print(io, index-1, " ")
     end
 end
 
@@ -127,9 +201,17 @@ function show_pipeline(core::AsapCore)
     end
     print_with_color(color, "Stage 1: $(s1_stage)\n")
 
-    # Print out stages 2, 3, and 4.
+    # Select a color for Stage 2
+    if stall_signals.stall_234
+        print_with_color(:red, "Stage 2: $(core.pipeline.stage2)\n")
+    elseif stall_signals.nop_2
+        print_with_color(:cyan, "Stage 2: $(PipelineEntry())\n")
+    else
+        print_with_color(:white, "Stage 2: $(core.pipeline.stage2)\n")
+    end
+
+    # Select a color for stages 3 and 4.
     color = stall_signals.stall_234 ? (:red) : (:white)
-    print_with_color(color, "Stage 2: $(core.pipeline.stage2)\n")
     print_with_color(color, "Stage 3: $(core.pipeline.stage3)\n")
     print_with_color(color, "Stage 4: $(core.pipeline.stage4)\n")
 
