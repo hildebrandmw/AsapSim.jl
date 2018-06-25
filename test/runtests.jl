@@ -14,14 +14,14 @@ using BenchmarkTools
 include("TestPrograms/TestPrograms.jl")
 using .TestPrograms
 
-# Assembler tests
-include("assembler/macro.jl")
-include("assembler/test_program.jl")
-
-# Fifo Tests
-include("fifo.jl")
-
-# Core Component Tests
-include("core/stall.jl")
-include("core/alu.jl")
+# # Assembler tests
+# include("assembler/macro.jl")
+# include("assembler/test_program.jl")
+# 
+# # Fifo Tests
+# include("fifo.jl")
+# 
+# # Core Component Tests
+# include("core/stall.jl")
+# include("core/alu.jl")
 include("core/programs.jl")

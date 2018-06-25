@@ -349,6 +349,8 @@ end
     nops :: Int8 = zero(Int8)
     # Set the "jump" flag for branches
     jump :: Bool = false
+    # Mark branch instructions as a return instruction.
+    isreturn :: Bool = false
     # conditional execution
     # TODO: Make this an enum for smaller storage?
     cxflag :: CXFlag = NO_CX
@@ -404,7 +406,7 @@ end
 end
 
 # Alias "NOP" to an empty constructor, which should provide a NOP by default.
-NOP() = AsapInstruction()
+const NOP = AsapInstruction
 
 
 # Methods on instructions - Since some values may be stored in some 

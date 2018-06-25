@@ -12,6 +12,9 @@ function update!(core::AsapCore)
 
     # First, get a record of all the stall signals that are active this cycle.
     stalls = stall_check(core)
+    # Look at Stage 4 to see if a misprediction happened. Must do this before
+    # next PC is calculated.
+    core.branch_mispredict = checkbranch(core)
 
     # Evaluate stage 0 - get the next-state signals to avoid changing the
     # state of "core" until the end of the cycle.
@@ -23,7 +26,13 @@ function update!(core::AsapCore)
     #
     # At the end, we will have to shift these entries in the pipeline according
     # to the set stall signals.
-    pipeline_stage1(core, stalls.stall_01)
+    pipeline_stage1(
+        core, 
+        stalls.stall_01, 
+        core.pc, 
+        core.branch_mispredict, 
+        stage0_nextstate.next_pc_unbranched,
+    )
     pipeline_stage2(core, stalls.stall_234, stalls.nop_2)
     pipeline_stage3(core, stalls.stall_234)
 
@@ -74,6 +83,8 @@ function update!(core::AsapCore)
 
     if !stalls.stall_01
         pipeline.stage2 = pipeline.stage1
+        # Set pipeline stage 1 using the PC computed this cycle
+        pipeline_stage1(core, false, stage0_nextstate.pc, false, stage0_nextstate.pc + 1)
     end
 
     # Clock the read side of the input fifos.
@@ -109,6 +120,10 @@ struct Stage0NextState
     repeat_end   :: Int
     # New return address
     return_address :: Int
+
+    # Data that's not part of the state but needs to be passed to Stage 1 to
+    # create new instructions linked to the correct return address
+    next_pc_unbranched :: Int
 end
 
 
@@ -180,8 +195,8 @@ function pipeline_stage0(core::AsapCore, stall::Bool)
     # 2. Stage 5 write to return address
     # 3. Mispredicted non-jump. Restore the old return address.
     # 4. S1 has a new predicted taken branch.
-    if core.branch_mispredict && stage4.instruction.options.jump
-        return_address_next = stage4.old_pc_plus_1
+    if core.branch_mispredict && stage4.instruction.jump
+        return_address_next = stage4.old_alternate_pc
 
     # If explicitly writing to return_address in Stage 5
     elseif stage5.instruction.dest == :ret
@@ -190,12 +205,12 @@ function pipeline_stage0(core::AsapCore, stall::Bool)
         return_address_next = stage5.result
 
     # Check if rolling back a non-jump instruction
-    elseif core.branch_mispredict && !stage4.instruction.options.jump
+    elseif core.branch_mispredict && !stage4.instruction.jump
         return_address_next = stage4.old_return_address
 
     # Check if stage 1 has a predicted-taken jump. If so, save the return
     # address as the next untaken PC.
-    elseif !stall && stage1.instruction.op == :BRL && stage1.instruction.options.jump
+    elseif !stall && stage1.instruction.op == :BRL && stage1.instruction.jump
         return_address_next = next_pc_unbranched
     end
 
@@ -206,12 +221,12 @@ function pipeline_stage0(core::AsapCore, stall::Bool)
     # Rollback from mispredicted branches
     if core.branch_mispredict
         # If mispredicted branch was a return, go to its return address
-        if stage4.instruction.src1 == :ret
+        if stage4.instruction.isreturn
             pc_next = stage4.old_return_address
 
         # If this branch was auto-taken, restore to its PC + 1
         elseif stage4.instruction.op == :BRL
-            pc_next = stage4.old_pc_plus_1
+            pc_next = stage4.old_alternate_pc
 
         # Otherwise, go to its target.
         else
@@ -224,7 +239,7 @@ function pipeline_stage0(core::AsapCore, stall::Bool)
 
     # Check for autobranching for the instruction in stage 1.
     elseif stage1.instruction.op == :BRL
-        if stage1.instruction.src1 == :ret
+        if stage1.instruction.isreturn
             pc_next = core.return_address
         else
             pc_next = branch_target(stage1.instruction)
@@ -240,25 +255,28 @@ function pipeline_stage0(core::AsapCore, stall::Bool)
         repeat_start_next,
         repeat_end_next,
         return_address_next,
+        next_pc_unbranched,
     )
 end
 
 #-------------------------------------------------------------------------------
 #                               Stage 1
 #-------------------------------------------------------------------------------
-function pipeline_stage1(core::AsapCore, stall::Bool)
+function pipeline_stage1(core::AsapCore, stall::Bool, pc, mispredict, next_pc)
     # Read instruction from pipestage.
-    if !stall
+    if mispredict
+        core.pipeline.stage1 = PipelineEntry(core, NOP())
+    elseif !stall
         # TODO: Make this correct.
-        if core.pc <= length(core.program)
-            instruction = core.program[core.pc]
+        if pc <= length(core.program)
+            instruction = core.program[pc]
         else
             instruction = NOP()
         end
         # Insert this instruction into the pipeline.
-        core.pipeline.stage1 = PipelineEntry(core, instruction)
-
+        core.pipeline.stage1 = PipelineEntry(core, instruction, next_pc)
     end
+    return nothing
 end
 
 #-------------------------------------------------------------------------------
@@ -323,6 +341,9 @@ function pipeline_stage2(core::AsapCore, stall::Bool, nop::Bool)
     if nop
         core.pipeline.stage2 = PipelineEntry()
         core.pending_nops -= 1
+
+    elseif core.branch_mispredict
+        core.pipeline.stage2 = PipelineEntry()
 
     else
         # Do pointer dereference checks.
@@ -413,9 +434,22 @@ function pipeline_stage3(core::AsapCore, stall::Bool)
 
     (stall || instruction.op == :NOP) && return nothing
 
-    # Handle the reading of operands.
-    stage3.src1_value = stage3_read(core, instruction.src1, instruction.src1_index)
-    stage3.src2_value = stage3_read(core, instruction.src2, instruction.src2_index)
+    if core.branch_mispredict
+        core.pipeline.stage3 = PipelineEntry()
+    else
+
+        # Handle the reading of operands.
+        stage3.src1_value = stage3_read(
+            core, 
+            instruction.src1, 
+            instruction.src1_index
+        )
+        stage3.src2_value = stage3_read(
+            core, 
+            instruction.src2, 
+            instruction.src2_index
+        )
+    end
 
     return nothing
 end
@@ -431,7 +465,7 @@ function pipeline_stage4(core::AsapCore, stall::Bool)
 
     (stall || instruction.op == :NOP) && return new_aluflags
 
-    # Do a stage 4 read. Provide a default value for alread-read instructions.
+    # Do a stage 4 read. Provide a default value for already read instructions.
     stage4.src1_value = stage4_read(
         core,
         instruction.src1,
@@ -449,7 +483,12 @@ function pipeline_stage4(core::AsapCore, stall::Bool)
     # If this is an ALU operation ... do an ALU evaluation.
     if instruction.optype == ALU_TYPE
         new_aluflags = stage4_alu(stage4, core.aluflags, core.condexec)
+
+    # Check for mispredicted branches
+    #elseif instruction.optype == BRANCH_TYPE
+    #    core.branch_mispredict = checkbranch(core, stage4)
     end
+
 
     return new_aluflags
 end
@@ -643,7 +682,13 @@ end
 Return `true` if branch instruction in `stage` was mispredicted. Return `true`
 otherwise.
 """
-function checkbranch(core::AsapCore, stage)
+function checkbranch(core::AsapCore)
+    # Get stage 4 of the pipeline.
+    stage = core.pipeline.stage4
+
+    # If this is not a branch, exit early.
+    stage.instruction.op == :BR || stage.instruction.op == :BRL || return false
+
     # Determine if this branch is predicted taken or not.
     #
     # Assume that the check for the branch instruction has happened before entry
@@ -664,7 +709,7 @@ function checkbranch(core::AsapCore, stage)
     #  7 - Empty memory input (TODO)
     #  6 - Empty packet input (TODO)
     #  5 - Empty IBUF1
-    #  4 - Empty IBUF0
+    #  4 - EmptyeIBUF0
     #  3 - Overflow
     #  2 - Carry
     #  1 - Zero
@@ -693,8 +738,8 @@ function checkbranch(core::AsapCore, stage)
     # Do a conditional execution check for this branch.
     #
     # If this branch fails the conditional execution check, it's not taken.
-    if (instruction.cxt && !core.condexec[instruction.cx_index + 1]) ||
-        (instruction.cxf && core.condexec[instruction.cx_index + 1])
+    if (instruction.cxflag == CX_TRUE && !core.condexec[instruction.cx_index + 1]) ||
+        (instruction.cxflag == CX_FALSE && core.condexec[instruction.cx_index + 1])
         branch_taken = false
     end
 

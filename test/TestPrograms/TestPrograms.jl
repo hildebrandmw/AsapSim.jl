@@ -11,7 +11,7 @@ module TestPrograms
     # --- Test writing to all destinations --- #
     #include("Destinations.jl") (TODO)
     # --- Test branch behavior --- #
-    #include("Branch.jl") (TODO)
+    include("Branch.jl")
     # --- Test RPT Instruction --- #
     include("Repeat.jl")
     # --- Test Conditional Execution --- #

@@ -248,8 +248,22 @@ function expand(inst::AsapIntermediate, label_dict)
         push!(kwargs, :src1 => :immediate)
         # Build the mask for the immediate
         push!(kwargs, :src1_index => make_branch_mask(inst.args))
-        # Get the index for the destination from the label dictionary
-        push!(kwargs, set_branch_target(label_dict[Symbol(inst.args[1])]))
+
+        # Two options for return target.
+        # 1. It is :return, in which case we need to mark this instruction
+        # as a "return" branch and don't need to set it's destination to
+        # anything.
+        #
+        # 2. It is an ordinary branch to a label, in which case we need to
+        # get the address of the label from the label_dict and save that as
+        # the branch target for this instruction.
+        target_label = Symbol(first(inst.args))
+
+        if target_label == Symbol(":return")
+            push!(kwargs, :isreturn => true)
+        else
+            push!(kwargs, set_branch_target(label_dict[Symbol(inst.args[1])]))
+        end
 
         # Get the rest of the options for this instruction.
         append!(kwargs, getoptions(inst.args[2:end]))

@@ -61,6 +61,7 @@ function increment!(ag::AddressGenerator)
     ag.current = (ag.current == ag.stop) ? ag.start : ag.current + ag.stride
     return nothing
 end
+rollback!(ag::AddressGenerator) = ag.current = ag.old
 
 
 mutable struct CondExec
@@ -89,16 +90,16 @@ CondExec() = CondExec(false, 0, :OR, false)
     # at every stage, but it will be cleaner to do it this way. It doesn't take
     # that much memory anyways.
     old_return_address :: Int64 = 0
-    old_pc_plus_1      :: Int64 = 0
+    old_alternate_pc   :: Int64 = 0
     old_repeat_count   :: Int64 = 0
 end
 
 PipelineEntry(i::AsapInstruction) = PipelineEntry(instruction = i)
-function PipelineEntry(core, inst::AsapInstruction)
+function PipelineEntry(core, inst::AsapInstruction, pc = core.pc + 1)
     return PipelineEntry(
         instruction = inst,
         old_return_address  = core.return_address,
-        old_pc_plus_1       = core.pc + 1,
+        old_alternate_pc    = pc,
         old_repeat_count    = core.repeat_count,
     )
 end

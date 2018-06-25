@@ -126,7 +126,7 @@ function show_hwstate(core::AsapCore)
     println()
 
     # Print out branch mispredict
-    if core.branch_mispredict
+    if checkbranch(core)
         print_with_color(:red, "Branch Mispredicted\n")
     else
         print_with_color(:green, "No Branch Mispredict\n")
@@ -184,6 +184,7 @@ end
 # CYAN:  Stage is inserting NOPS.
 function show_pipeline(core::AsapCore)
     stall_signals = stall_check(core)
+    core.branch_mispredict = checkbranch(core)
 
     print_with_color(:white, "Pipeline\n"; bold = true)
 
@@ -193,13 +194,12 @@ function show_pipeline(core::AsapCore)
 
     # Print stage 0
     print_with_color(color, "Stage 0: No Instruction\n")
+
+    # Run Stage 0 to get the next program counter.
+    s0_nextstate = pipeline_stage0(core, stall_signals.stall_01)
+
     # Create a instruction for stage 1. Make NOP if PC is out of bounds.
-    if core.pc <= length(core.program)
-        s1_stage = PipelineEntry(core, core.program[core.pc])
-    else
-        s1_stage = PipelineEntry(core, NOP())
-    end
-    print_with_color(color, "Stage 1: $(s1_stage)\n")
+    print_with_color(color, "Stage 1: $(core.pipeline.stage1)\n")
 
     # Select a color for Stage 2
     if stall_signals.stall_234

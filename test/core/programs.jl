@@ -118,7 +118,99 @@ end
     @test core.dmem[4] == fifo_value_2
 end
 
-@testset "Running Repeat Test" begin
+################################################################################
+# Branch Tests
+################################################################################
+@testset "Running Branch Tests" begin
+    # Test branch predicted taken
+    core = test_core(TestPrograms.branch_forward_taken_1())
+    runfor(core, 20)
+    # Make sure first MOVE worked
+    @test core.dmem[1] == 1
+    # These instructions should have been skipped.
+    @test core.dmem[2] == 0
+    @test core.dmem[3] == 0
+    @test core.dmem[4] == 0
+    @test core.dmem[5] == 0
+    # This instruction should have been branced to and executed
+    @test core.dmem[6] == 10
+
+    # --
+    core = test_core(TestPrograms.branch_forward_taken_2())
+    runfor(core, 15)
+    @test core.dmem[1] == 1
+    @test core.dmem[2] == 1
+
+    # -- Test branch predicted not-taken
+    core = test_core(TestPrograms.branch_forward_untaken_1())
+    runfor(core, 20)
+    # Make sure first MOVE worked
+    @test core.dmem[1] == 1
+    # These instructions should have been skipped.
+    @test core.dmem[2] == 0
+    @test core.dmem[3] == 0
+    @test core.dmem[4] == 0
+    @test core.dmem[5] == 0
+    # This instruction should have been branced to and executed
+    @test core.dmem[6] == 10
+
+    # --
+    core = test_core(TestPrograms.branch_forward_untaken_2())
+    runfor(core, 15)
+    @test core.dmem[1] == 1
+    @test core.dmem[2] == 1
+
+    # ------------------ #
+    # Branch Stress Test #
+    # ------------------ #
+    core = test_core(TestPrograms.branch_stress_1())
+    runfor(core, 30)
+    # Make sure the entries we want set are set
+    for i in 1:5
+        @test core.dmem[i] == 1
+    end
+    # Make sure nothing else was set.
+    for i in 50:62
+        @test core.dmem[i] == 0
+    end
+
+    # -------------------- #
+    # Test Jump and Return #
+    # -------------------- #
+    core = test_core(TestPrograms.test_jump_1())
+    runfor(core, 10)
+    @test core.return_address == 3
+
+    # Test that return address is handled correctly when called at the end
+    # of a RPT block
+    core = test_core(TestPrograms.test_jump_2())
+    runfor(core, 20)
+
+    # Make sure the return address was saved correctly
+    @test core.return_address == 2
+    @test core.dmem[1] == 1
+    for i in 2:4
+        @test core.dmem[i] == 0
+    end
+
+    # -- Test the retun instruction
+    core = test_core(TestPrograms.test_return_1())
+    runfor(core, 30)
+
+    # Expect address 2 to be saved as the return address
+    @test core.return_address == 2
+    # Should have written 1 to addresses 0 - 2
+    for i in 0:2
+        @test core.dmem[i+1] == 1
+    end
+    # Should NOT have written to address 10 - 12
+    for i in 10:12
+        @test core.dmem[i+1] == 0
+    end
+
+end
+
+@testset "Running Repeat Tests" begin
     core = test_core(TestPrograms.repeat_1())
     runfor(core, 20)
     @test core.dmem[1] == 10
@@ -129,7 +221,7 @@ end
     @test core.dmem[2] == 10
 
     core = test_core(TestPrograms.repeat_3())
-    runfor(core, 60)
+    @time runfor(core, 60)
     @test core.dmem[1] == 10
     @test core.dmem[2] == 10
     @test core.dmem[3] == 10
