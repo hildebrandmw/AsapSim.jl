@@ -219,7 +219,7 @@ function pipeline_stage0(core::AsapCore, stall::Bool, mispredict)
             pc_next = stage3.old_return_address
 
         # If this branch was auto-taken, restore to its PC + 1
-        elseif stage4.instruction.op == :BRL
+        elseif stage3.instruction.op == :BRL
             pc_next = stage3.old_alternate_pc
 
         # Otherwise, go to its target.
@@ -678,7 +678,7 @@ function stage4_alu(
 
     # Update the zero and negative flats.
     zero_next = result == 0
-    negative_next = (stage.result & 0x8000) != 0
+    negative_next = (result & 0x8000) != 0
 
     # Return the next carry flags.
     return result, ALUFlags(
