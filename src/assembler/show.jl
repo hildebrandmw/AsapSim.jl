@@ -15,9 +15,9 @@ function show_basic(io::IO, x::AsapInstruction)
     # Show the op
     print(io, x.op, " ")
     # Print destinations and sources
-    print(io, "$(stringvec(x.dest, x.dest_index)) ")
-    print(io, "$(stringvec(x.src1, x.src1_index)) ")
-    print(io, "$(stringvec(x.src2, x.src2_index)) ")
+    print(io, "$(x.dest) ")
+    print(io, "$(x.src1) ")
+    print(io, "$(x.src2) ")
     return nothing
 end
 
@@ -57,7 +57,7 @@ function show_rpt(io::IO, x::AsapInstruction)
     # Show the OP
     print(io, x.op, " ")
     print(io, "start=$(repeat_start(x)) stop=$(repeat_end(x)) ")
-    print(io, "repeats=$(stringvec(x.src1, x.src1_index)) ")
+    print(io, "repeats=$(x.src1) ")
 
     show_options(io, x)
     show_extra(io, x)

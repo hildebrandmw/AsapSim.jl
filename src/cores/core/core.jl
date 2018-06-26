@@ -445,21 +445,21 @@ function stall_check_io(core::AsapCore, instruction::AsapInstruction)
     # --- Check inputs ---
 
     # NOTE: Must do conversion from index 0 to index 1
-    if instruction.src1 == :ibuf || instruction.src1 == :ibuf_next
+    if sym(instruction.src1) == :ibuf || sym(instruction.src1) == :ibuf_next
         # The fifo to check should be in the src1_index field of the instruction.
-        stall_check_ibuf(core, instruction.src1_index + 1, default) != default && return true
+        stall_check_ibuf(core, ind(instruction.src1) + 1, default) != default && return true
     end
 
-    if instruction.src2 == :ibuf || instruction.src2 == :ibuf_next
-        stall_check_ibuf(core, instruction.src2_index + 1, default) != default && return true
+    if sym(instruction.src2) == :ibuf || sym(instruction.src2) == :ibuf_next
+        stall_check_ibuf(core, ind(instruction.src2) + 1, default) != default && return true
     end
 
     # Check writes to an output
-    if instruction.dest == :output
-        stall_check_obuf(core, instruction.dest_index + 1, default) != default && return true
+    if sym(instruction.dest) == :output
+        stall_check_obuf(core, ind(instruction.dest) + 1, default) != default && return true
     # Check if doing a broadcast. Then, stall if any of the outputs selected
     # by the obuf_mask are stalling.
-    elseif instruction.dest == :obuf
+    elseif sym(instruction.dest) == :obuf
         for (index, flag) in enumerate(core.obuf_mask)
             flag || continue
             stall_check_obuf(core, index, default) != default && return true

@@ -28,5 +28,5 @@
         MOVE(dmem[0], dmem[1], nop3)
         # Add NOPs to ensure writeback happens.
         NOP()
-        BRL(:return)
+        BRL(back)
 end

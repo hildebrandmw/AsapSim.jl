@@ -12,128 +12,95 @@ macro asap4asm(expr)
     return esc(convertcode(expr))
 end
 
-"""
-    asap4asm(code)
-
-Asap assembly instructions will be encoded as a sequence of pseudo-assembly
-function calls. For example:
-
-```julia
-function test()
-    @label :start
-    ADD(dmem[0], dmem[1], 10)
-    BR(:start, U)
+# Need to make this mutable since we will potentially modifying and changing
+# some instructions before separating the instructions and labels.
+mutable struct InstructionLabelPair
+    instruction :: AsapInstruction
+    label       :: Union{Symbol,Void}
 end
-```
 
-"""
 function convertcode(expr::Expr)
-    # Need to do several processing steps.
-    # 1. Walk through the code and find all Pseudo-assembly function calls and 
-    #    arguments, emit these as a vector of AsapIntermediate instructions
-    #
-    # 2. Find all "END_RPT" blocks, encode their address in their parent
-    #    "RPT" instruction and remove them from the instruction vector
-    #
-    # 3. Resolve branch targets to addresses, which will just be an index into
-    #    the instruction vector.
-    #
-    # 4. Walk the expression tree again, replacing all pseudo-assembly 
-    #    instructions with constrctors for AsapInstructions. Note, we do this
-    #    step to preserve line numbers for errors. If a user has some kind of
-    #    computation for an immediate that errors, error should preserve line 
-    #    number and filename for easier debugging.
-    #
-    # 5. Return the new code to the caller for execution.
+    # This macro does the following:
+    # 1. Extracts the body of the passed function using MacroTools' excellent
+    #    "splitdef" function.
+    # 2. Drop in an empty Vector{InstructionLabelPair} at the beginning of
+    #    the function.
+    # 3. Walk through the body of the function in order, recording the labels
+    #    it sees and converting pseudo-assembly function calls into 
+    #    InstructionLabelPairs and appending them to the vector.
+    # 4. Replace each return by passing the Vector{InstructionLabelPairs} with
+    #    a call to an "assembler" function that will analyze the code to resolve
+    #    labels and RPT instructions before returning a final program as a
+    #    Vector{AsapInstruction}
 
-    # Split up the function into pieces.
+    # 1 - split function.
     split_expr = splitdef(expr)
-    # Extract intermediate instructions from the body of the code.
-    # 
-    # Need to call "unblock" from the body of the function to handle the case
-    # where a program only have 1 instruction.
-    intermediate_instructions = getassembly(MacroTools.unblock(split_expr[:body]))
-    # Encode the repeat blocks and remove the "END_RPT" instructions so 
-    # addresses in the final vector are complete.
-    handle_rpt!(intermediate_instructions)
+    function_body = split_expr[:body]
 
-    # Create full instructions from the intermediate instructions.
-    # This step through the intermediate instructions is important for
-    # getting labels recorded correctly.
-    instructions = expand(intermediate_instructions)
+    # 2 - generate a symbol for the intermediate program and insert it into the
+    # beginning of the function body.
+    program_vector_sym = gensym("program")
+    startvector!(function_body, program_vector_sym)
 
-    # TODO: Eventually want to replace this with a move elegent method of
-    # adding each instruction individually to the vector to allow for assembly
-    # programs to include their own local definitions for immediates. However,
-    # this works for now as a simple technique.
-    return MacroTools.@q function $(split_expr[:name])()
-        return [$(instructions...)]
-    end
+    # 3 - Replace all instructions with "push!" to the program_vector.
+    function_body = replace_instructions(function_body, program_vector_sym)
+
+    # 4 - Replace "return" statements with calls to the assembler.
+    # Insert a return statement at the end as well as a default catch.
+    function_body = replace_returns(function_body, program_vector_sym) 
+
+    # Rebuild the function and return the modified source code.
+    split_expr[:body] = function_body
+    return MacroTools.combinedef(split_expr)
 end
 
-# Recursive function for gathering line numbers and first-pass instruction 
-# parsing.
-function getassembly(expr)
-    instructions = AsapIntermediate[]
+function startvector!(function_body :: Expr, program_vector_sym)
+    unshift!(function_body.args, :($program_vector_sym = InstructionLabelPair[]))
+end
 
-    # Set line and file variables to null values. Will get filled in as these
-    # objects are discovered while walking the expression tree.
-    line = -1
-    file = :null
-    label = nothing
+function replace_instructions(function_body :: Expr, program_vector_sym)
+    # Record the last seen label. Attach this to all found assembly instructions.
+    #
+    # When assembling, the label will be resolved to the first instruction that
+    # has that label.
+    label :: Union{Symbol,Void} = nothing
 
-    # This is constant and won't change in this function - it's changed later.
-    # However, for clarity, define it here.
-    repeat_start = nothing
-    repeat_end = nothing
-
-    # Call "postwalk" on the expression. This will visit the leaves of the 
-    # expression tree first, presumably from top to bottom, which is the order
-    # we want.
-
-    # NOTE: postwalk will walk the whole expression tree, which may lead to
-    # suboptimal performance as the expression trees grow large. We may be
-    # able to optimize this by only walking through a subset of the whole
-    # tree on not recursively growing the search like a whole postwalk does.
-    MacroTools.postwalk(expr) do ex
-        # Check if this is a line number. If so, record it to the "line" and
-        # "file" variables so they can be stored with the next emitted 
-        # instruction for error messages.
-        if MacroTools.isexpr(ex, :line)
-            # The expression for the line looks as follow:
-            # Expr
-            #   head: Symbol line
-            #   args: Array{Any}((2,))
-            #     1: Int64 3
-            #     2: Symbol REPL[2]
-            #   typ: Any
-            line = ex.args[1]
-            file = ex.args[2]
-
-        # Check if this is a function call. If so, slurp up all of the arguments
-        # and emit a new instruction
-        elseif @capture(ex, op_(args__))
-            # Skip calls to functions that are not in the provided opcodes.
-            # This help keep things like arithmetic for immediates.
+    # Walk through the expression - replacing pseudo-assembly with parsed
+    # instruction types.
+    new_body = MacroTools.postwalk(function_body) do ex
+        if @capture(ex, op_(args__))
+            # Check if the name of the function being called is a Assembly
+            # instruction. If not - leave it alone.
             if isop(op)
-                new_instruction = AsapIntermediate(
-                    op, 
-                    args, 
-                    label, 
-                    repeat_start, 
-                    repeat_end, 
-                    file, 
-                    line
-                )
+                # Parse the arguments for this operation. Expect to recieve a
+                # vector of Pair{Symbol,Any} that represent the arguments to
+                # be passed to an AsapInstructionKeyword constructor.
+                pairs = getpairs(op, args)
+                kwargs = map(pairs) do p
+                    key = p[1]
+                    value = p[2]
+                    # Have to build these expression manually with the :kw head because 
+                    # doing :($kev = $value) is interpreted as some kind of assignment
+                    # rather than passing a keyword argument.
+                    if value isa Symbol
+                        return Expr(:kw, key, Meta.quot(value))
+                    else
+                        return Expr(:kw, key, value)
+                    end
+                end
 
-                push!(instructions, new_instruction)
+                # Create an expression pushing the pair of this label and
+                # a AsapInstruction to the program vector.
+                new_ex = :(push!(
+                     $program_vector_sym,
+                     InstructionLabelPair(
+                        AsapInstructionKeyword(;$(kwargs...)),
+                        $(Meta.quot(label))
+                     )))
 
-                # Clear the metadata to prepare for next instructions.
-                line = -1
-                file = :null
-                label = nothing
+                # replace the expression
+                return new_ex
             end
-
         # Record macro calls
         # The item returned by the @capture will be either a QuoteNode or
         # a Symbol. For consistency sake, always turn it into a Symbol.
@@ -143,172 +110,83 @@ function getassembly(expr)
         # what is going on there.
         elseif @capture(ex, @label label_quotenode_or_symbol_)
             label = Symbol(label_quotenode_or_symbol)
+            # Replace the label with nothing - removing it from the code.
+            return nothing
         end
 
-        # Return the sub-expression unchanged to avoid mutating the expression.
+        # Default fallback - return expression unchanged.
         return ex
     end
 
-    # Return vector of instructions.
-    return instructions
+    return new_body
 end
 
-
-function handle_rpt!(intermediates::Vector{AsapIntermediate})
-    # Iterate through each element of the intermediate instructions. 
-    index_of_last_rpt = 0
-    index = 1
-    while index <= length(intermediates)
-        if intermediates[index].op == :END_RPT
-            # Save the index of the instruction before this as the end of the
-            # repeat block and delete this op from the instruction vector.
-            intermediates[index_of_last_rpt].repeat_end = index - 1
-
-            # In this case, don't increment "index" because it will 
-            # automatically point to the next instruction since we deleted
-            # :END_RPT
-            deleteat!(intermediates, index)
-        elseif intermediates[index].op == :RPT
-            # Set the start point for this repeat. Since we've removed all
-            # END_RPT before this, we don't have to worry about this index
-            # getting messed up. 
-            #
-            # Add 1 so the start points to the next instruction.
-            intermediates[index].repeat_start = index + 1
-
-            # Mark the index of the last repeat function for fast setting.
-            index_of_last_rpt = index
-            index += 1
-        else
-            index += 1
-        end
-    end
-end
-
-"""
-    expand(intermediate::Vector{AsapIntermediate})
-
-Return the full form of the intermediate instructions.
-"""
-function expand(intermediates::Vector{AsapIntermediate})
-    # Step 1: Find the location of all labels in the intermediate program.
-    label_dict = findlabels(intermediates)
-    # Step 2: Iterate through each instruction, expand to the full instruction
-    # based on the opcode.
-    instructions = map(intermediates) do i
-        pairs = expand(i, label_dict)
-        # Create the keyword arguments for an AsapInstruction from the returned
-        # pairs.
-        kwargs = map(pairs) do p
-            key = p[1]
-            value = p[2]
-            # Have to build these expression manually with the :kw head because 
-            # doing :($kev = $value) is interpreted as some kind of assignment
-            # rather than passing a keyword argument.
-            if value isa Symbol
-                return Expr(:kw, key, Meta.quot(value))
-            else
-                return Expr(:kw, key, value)
-            end
-        end
-        return :(AsapInstructionKeyword(;$(kwargs...)))
-    end
-
-    return instructions
-end
-
-"""
-    findlabels(x::Vector{AsapIntermediate})
-
-Return a Dict{Symbol,Int64} with keys that are the symbols of labels in the
-intermediate code and whose values are the indices of instructions with those
-labels.
-"""
-findlabels(x::Vector{AsapIntermediate}) = 
-    Dict(k.label => i for (i,k) in enumerate(x) if k.label isa Symbol)
-
+# Helper macro.
 macro pairpush!(kwargs, syms...)
     symmaps = [:($(Meta.quot(sym)) => $sym) for sym in syms]
     return esc(:(push!($kwargs, $(symmaps...))))
 end
 
-function expand(inst::AsapIntermediate, label_dict)
-    # Key-word arguments to pass to the constructor for the instruction.
-    kwargs = Vector{Pair{Symbol,Any}}([:op => inst.op])
+function getpairs(op, args)
+    # Need to get a collection of keyword arguments to give to the caller for
+    # this operation and arguments.
+    kwargs = Vector{Pair{Symbol,Any}}([:op => op])
 
     # Get the InstructionDefinition for this operation.
-    def = getdef(inst.op)
+    def = getdef(op)
 
-    # Decode the instruction.
-    # Handle special cases first:
+    # Hendle special instrucitons first.
+    if op == :BR || op == :BRL
+        # Get the destination label
+        destination_label = first(args)
 
-    # TODO: Rethink how to encode STALLS
-    if inst.op == :BR || inst.op == :BRL
-        # Set the source to an immediate
-        push!(kwargs, :src1 => :immediate)
-        # Build the mask for the immediate
-        push!(kwargs, :src1_index => make_branch_mask(inst.args))
+        # Record the destination symbol directly. This will get resolved in
+        # later assembling passes.
+        push!(kwargs, :dest => Loc(destination_label))
 
-        # Two options for return target.
-        # 1. It is :return, in which case we need to mark this instruction
-        # as a "return" branch and don't need to set it's destination to
-        # anything.
-        #
-        # 2. It is an ordinary branch to a label, in which case we need to
-        # get the address of the label from the label_dict and save that as
-        # the branch target for this instruction.
-        target_label = Symbol(first(inst.args))
-
-        if target_label == Symbol(":return")
+        # Record if this is a return.
+        if destination_label == :back
             push!(kwargs, :isreturn => true)
-        else
-            push!(kwargs, set_branch_target(label_dict[Symbol(inst.args[1])]))
         end
 
-        # Get the rest of the options for this instruction.
-        append!(kwargs, getoptions(inst.args[2:end]))
+        # Remove the destination argument from the vector to avoid using it
+        # more than once.
+        shift!(args)
+
+        # (TODO) - this is temporary. Need to really first perform a check to
+        # see if the caller is providing branch options. Otherwise, need to be
+        # a little more precise with how this is handled
+        push!(kwargs, :src1 => Loc(:immediate, make_branch_mask(args)))
+
+        # Get options for this instruction.
+        append!(kwargs, getoptions(args))
 
     # General instruction decoding.
     else
-        # If this instruction definition has a destination, extract that
-        # destination and remove it from the argument list.
+        # If this instruction definition has a destination - extract it and
+        # remove the destination from the argument list.
         if def.dest
-            dest, dest_index = extract_ref(first(inst.args))
-            @pairpush! kwargs dest dest_index
-            shift!(inst.args)
-
-            # Check if the destination is a core output. If so, mark this
-            # instruction.
-            if dest in DestinationOutputs
-                push!(kwargs, (:dest_is_output => true))
-            end
+            dest = extract_loc(first(args))
+            @pairpush! kwargs dest
+            shift!(args)
         end
 
-        # Parse out src1
+        # Parse out src1 and src2
         if def.src1
-            src1, src1_index = extract_ref(first(inst.args))
-            @pairpush! kwargs src1 src1_index
-            shift!(inst.args)
+            src1 = extract_loc(first(args))
+            @pairpush! kwargs src1
+            shift!(args)
         end
-
-        # Parse out src2
         if def.src2
-            src2, src2_index = extract_ref(first(inst.args))
-            @pairpush! kwargs src2 src2_index
-            shift!(inst.args)
+            src2 = extract_loc(first(args))
+            @pairpush! kwargs src2
         end
 
-        # Get the options for this instruction.
-        append!(kwargs, getoptions(inst.args))
-
-        # Handle special instructions
-        if inst.op == :RPT
-            push!(kwargs, set_repeat_start(inst.repeat_start))
-            push!(kwargs, set_repeat_end(inst.repeat_end))
-        end
+        # Get options for this instruction.
+        append!(kwargs, getoptions(args))
     end
 
-    # Mark op-type and some special properties.
+    # Mark the op type and special attributes.
     push!(kwargs, :optype => def.optype)
     if def.signed
         push!(kwargs, :signed => true)
@@ -319,29 +197,58 @@ function expand(inst::AsapIntermediate, label_dict)
     return kwargs
 end
 
-# Helper functions
-
-# Cases where an immediate is given - set the symbol to "immediate" and store
-# the value of the immediate as the "value" of the source or destination.
-extract_ref(val::Integer) =  (:immediate, val)
-
-# If just a symbol is given, store that symbol and give a "value" of -1.
-extract_ref(sym::Symbol) =  (sym, -1)
-
-# Fallback case, store the symbol of the reference and the index as the "value"
-function extract_ref(expr::Expr)
+extract_loc(val::Integer) = :(Loc(:immediate, $val))
+function extract_loc(sym::Symbol) 
+    # if this symbol is a reserved symbol, quote it and return it directly.
+    # Otherwise, assume it is some kind of input and don't wrap the symbol
+    # in a quote
+    if sym in ReservedSymbols
+        return :(Loc($(Meta.quot(sym))))
+    else
+        return :(Loc($sym))
+    end
+end
+function extract_loc(expr::Expr)
     # Check if this expression is a :ref expression (like "dmem[0]"), if so
     # return the two args (i.e. :dmem and 0)
-    if expr.head == :ref
-        # TODO: check if the first argument is in one of the proper destination
-        # arguments. If it isn't, throw an error?
-        return (expr.args[1], expr.args[2])
+    if @capture(expr, sym_[ind_])
+        # Check if the symbol is a Reserved Symbol. If so, create the Loc
+        # immediately.
+        #
+        # Otherwise, assume it's defined somewhere else in the main funciton.
+        if sym in ReservedSymbols
+            return :(Loc($(Meta.quot(sym)), $ind))
+        else
+            return :(Loc($expr))
+        end
 
     # Otherwise, assume this expression is some computation for an immediate
     # and pass the whole expression.
     else
-        return (:immediate, expr)   
+        return :(Loc($expr))
     end
+end
+
+function replace_returns(function_body, program_vector_sym)
+    # Create the expression to replace the returns with.
+    new_ex = :(return assemble($(program_vector_sym)))
+
+    # Add an empty return at the end of the function body.
+    # This will get replaced with the above expression during the pass below.
+    push!(function_body.args, :(return))
+
+    # Postwalk again, replace returns.
+    new_body = MacroTools.postwalk(function_body) do ex
+        if @capture(ex, return args__)
+            # TODO: Maybe give error if there are arguments other than "nothing"
+            return new_ex
+        end
+
+        # Default return
+        return ex
+    end
+
+    return new_body
 end
 
 # Function for constructing the immediate mask for the branch instruction.
@@ -393,12 +300,3 @@ function make_stall_mask(args)
     # No default bit needs to be set for the stall mask.
     return mask
 end
-
-# Accessors for reading stall bits.
-stall_empty_ibuf0(inst::AsapInstruction)    = inst.src1_index & (1 << 0) != 0
-stall_empty_ibuf1(inst::AsapInstruction)    = inst.src1_index & (1 << 1) != 0
-stall_empty_packet(inst::AsapInstruction)   = inst.src1_index & (1 << 2) != 0
-stall_empty_mem(inst::AsapInstruction)      = inst.src1_index & (1 << 3) != 0
-stall_full_packet(inst::AsapInstruction)    = inst.src1_index & (1 << 4) != 0
-stall_full_mem(inst::AsapInstruction)       = inst.src1_index & (1 << 5) != 0
-stall_full_obuf(inst::AsapInstruction)      = inst.src1_index & (1 << 6) != 0

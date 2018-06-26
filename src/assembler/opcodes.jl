@@ -127,11 +127,34 @@ const AsapInstructionList = (
 # Create a dictionary mapping opcodes to their instruction definition
 const Instruction_Dict = Dict(i.opcode => i for i in AsapInstructionList)
 isop(x::Symbol) = haskey(Instruction_Dict, x)
+# Generic fallback
+isop(x) = false
+
 getdef(x::Symbol) = Instruction_Dict[x]
 
-const output_dests = (
-    :output,
-)
+# Use this "Loc" type to store instruction source/dest information. It will
+# contain a Symbol to identify the name of the source/dest, and an "index" field
+# that will be either a true index for accesses to places like dmem or output,
+# Or store other information such as immediate values.
+struct Loc
+    sym::Symbol
+    ind::Int
+end
+
+Loc() = Loc(:null, -1)
+Loc(x::Int) = Loc(:immediate, x)
+Loc(x::Symbol) = get(SourceAliases, x, Loc(x, -1))
+Loc(x::Loc) = x
+
+Base.:(==)(a::Loc, b::Loc) = (a.sym == b.sym) && (a.ind == b.ind)
+
+Base.convert(::Type{Loc}, x::Int) = Loc(x)
+Base.convert(::Type{Loc}, x::Symbol) = Loc(x)
+
+sym(x::Loc) = x.sym
+ind(x::Loc) = x.ind
+
+Base.show(io::IO, x::Loc) = print(io, "$(sym(x))[$(ind(x))]")
 
 #=
 The general idea here is that a macro will be created that can take
@@ -177,6 +200,21 @@ const SourceSymbols = (
     # :packet_router_next
 )
 
+const SourceAliases = Dict(
+    # Inputs
+    :ibuf0 => Loc(:ibuf, 0),
+    :ibuf1 => Loc(:ibuf, 1),
+    :ibuf0_next => Loc(:ibuf_next, 0),
+    :ibuf1_next => Loc(:ibuf_next, 1),
+    # Address Generators
+    :ag0pi => Loc(:ag_pi, 0),
+    :ag1pi => Loc(:ag_pi, 1),
+    :ag2pi => Loc(:ag_pi, 2),
+    :ag0   => Loc(:ag, 0),
+    :ag1   => Loc(:ag, 1),
+    :ag2   => Loc(:ag, 2),
+)
+
 
 #-------------------------------------------------------------------------------
 # Destination encoding
@@ -194,6 +232,14 @@ const DestinationSymbols = (
     :output,     # Write to OBUF, directions starting at 0 are:
         # east, north, west, south, right, up, left, down. (index needed)
     :obuf,       # Write to all output broadcast directions.
+    :obuf_mask,
+    :set_pointer,
+    :ag_start,
+    :ag_stride,
+    :cxmask,
+
+    # Return from a branch.
+    :back,
 
     # --- Unimplemented ---#
     # :external_mem
@@ -203,56 +249,14 @@ const DestinationSymbols = (
     # :start_pulse_test
 )
 
+
+const ReservedSymbols = union(SourceSymbols, keys(SourceAliases), DestinationSymbols)
+
 const DestinationOutputs = (
     :output,
     :obuf,
 )
 
-
-# Intermediate form for an instruction.
-# The pseudo-assembly will be parsed directly into these intermediate
-# instructions, which will then be analyzed to emit the final vector of
-# AsapInstructions.
-mutable struct AsapIntermediate
-    op   :: Symbol
-    args :: Vector{Any}
-
-    # The label assigned to this instruction
-    label       :: Union{Symbol,Void}
-    # The end-address if this is a repeat instruction
-    repeat_start :: Union{Int64, Void}
-    repeat_end  :: Union{Int64,Void}
-
-    # Store the file and line numbers to provide better error messages while
-    # converting the intermediate instructions into full instructions.
-    file :: Symbol
-    line :: Int64
-end
-
-# Convenience constructors.
-function AsapIntermediate(
-        op      ::Symbol, 
-        args    ::Vector, 
-        label = nothing;
-        #kwargs
-        repeat_start = nothing,
-        repeat_end = nothing,
-        file = :null,
-        line = 0
-    ) 
-
-    return AsapIntermediate(op, args, label, repeat_start, repeat_end, file, line)
-end
-
-# For equality purposes, ignore file and line. Makes for easier testing.
-# If "file" and "line" become important for testing function equality, I may
-# have to revisit this.
-Base.:(==)(a::T, b::T) where {T <: AsapIntermediate} = 
-    a.op == b.op &&
-    a.args == b.args &&
-    a.label == b.label &&
-    a.repeat_start == b.repeat_start &&
-    a.repeat_end == b.repeat_end
 
 
 function oneofin(a, b)
@@ -318,69 +322,46 @@ end
 struct AsapInstruction
     # The opcode of the instruction. Set the defaultes for the "with_kw" 
     # constructor to be a "nop" if constructed with no arguments.
-    op :: Symbol# = :NOP
+    op :: Symbol
 
-    # Sources and destination will come in pairs
-    # 1. A Symbol, indication the name of the source or destination. Use symbols
-    #    instead of Strings or Integers because Symbols are interred in Julia 
-    #    and thus compare for equality faster than strings, and are clearer
-    #    visually than integers.
-    # 
-    # 2. An extra metadata value as an integer. For some sources/destinations,
-    #    such as dmem references, this integer will serve as an index, allowing
-    #    for fast decoding.
-    #
-    #    For other instructions, like immediates or branches, this index will
-    #    store other information like branch address, immediate value, or
-    #    start and end addresses for RPT loops. Convenient setter and accessor
-    #    functions will be provided so this doesn't have to be esplicitly 
-    #    remembered
-    src1       :: Symbol# = :null
-    src1_index :: Int64#  = -1
-
-    src2       :: Symbol# = :null
-    src2_index :: Int64#  = -1
-
-    dest       :: Symbol# = :null
-    dest_index :: Int64#  = -1
+    # Source and destination values.
+    dest :: Loc
+    src1 :: Loc
+    src2 :: Loc
 
     # ------------------------ #
     # Options for instructions #
     # ------------------------ #
 
     # Number of no-ops to put after this instruction.
-    nops :: Int8# = zero(Int8)
+    nops :: Int8
     # Set the "jump" flag for branches
-    jump :: Bool# = false
+    jump :: Bool
     # Mark branch instructions as a return instruction.
-    isreturn :: Bool# = false
+    isreturn :: Bool
     # conditional execution
-    # TODO: Make this an enum for smaller storage?
-    cxflag :: CXFlag# = NO_CX
+    cxflag :: CXFlag
     # Index of the conditional register to use.
-    cxindex::Int8# = zero(Int8)
+    cxindex :: Int8
     # Options for writeback to dmem. If "true", single-write will happen
     # Default to this as it should be the common case and to bring it into
     # alignment with the c++ simulator
-    sw::Bool# = true
+    sw :: Bool
 
     # Metadata for faster decoding during Stage 4 arithmetic or for performing
     # stall detection
-    signed      :: Bool# = false
-    saturate    :: Bool# = false
+    signed      :: Bool
+    saturate    :: Bool
     # For fast differentiation between ALU and MAC instructions
-    optype          :: OpType#   = NOP_TYPE
-    dest_is_output  :: Bool#     = false
+    optype          :: OpType
+    dest_is_output  :: Bool
 end
 
 AsapInstruction() = AsapInstruction(
     :NOP,       # op
-    :null,      # src1 
-    -1,         # src1_index
-    :null,      # src2
-    -1,         # src2_index
-    :null,      # dest
-    -1,         # dest_index
+    Loc(),      # dest
+    Loc(),      # src1
+    Loc(),      # src2
     zero(Int8), # nops
     false,      # jump
     false,      # isreturn
@@ -395,12 +376,9 @@ AsapInstruction() = AsapInstruction(
 
 function AsapInstructionKeyword(;
         op = :NOP,
-        src1 = :null,
-        src1_index = -1,
-        src2 = :null,
-        src2_index = -1,
-        dest = :null,
-        dest_index = -1,
+        dest = Loc(),
+        src1 = Loc(),
+        src2 = Loc(),
         nops = zero(Int8),
         jump = false,
         isreturn = false,
@@ -415,9 +393,7 @@ function AsapInstructionKeyword(;
 
     return AsapInstruction(
         op, 
-        src1, src1_index,
-        src2, src2_index,
-        dest, dest_index,
+        dest, src1, src2,
         nops, jump, isreturn,
         cxflag, cxindex,
         sw, signed, saturate,
@@ -426,16 +402,22 @@ function AsapInstructionKeyword(;
     )
 end
 
-
 abstract type Mutator{T} end
 
 immutable SrcDestCollection <: Mutator{AsapInstruction}
-    src1        :: Symbol
-    src1_index  :: Int
-    src2        :: Symbol
-    src2_index  :: Int
-    dest        :: Symbol
-    dest_index  :: Int
+    dest        :: Loc
+    src1        :: Loc
+    src2        :: Loc
+end
+
+immutable InstSrc1 <: Mutator{AsapInstruction}
+    src1 :: Loc
+end
+immutable InstSrc2 <: Mutator{AsapInstruction}
+    src2 :: Loc
+end
+immutable InstDest <: Mutator{AsapInstruction}
+    dest :: Loc
 end
 
 # Here's a method to change the src's and dest of an instruction quickly 
@@ -446,7 +428,7 @@ end
 #
 # Make this a @generated function so it keeps working even if the other fields
 # of the AsapInstruction change.
-@generated function reconstruct(a::T, b::U) where U <: Mutator{T} where T
+@generated function set(a::T, b::U) where U <: Mutator{T} where T
     # Get the fieldnames for the two arguments.
     a_fields = fieldnames(T)
     b_fields = fieldnames(U)
@@ -476,16 +458,16 @@ function branch_target(i::AsapInstruction)
     # For debugging, ensure that this is only called on branch instructions.
     # If not, something ahs gone wrong.
     @assert i.op == :BR || i.op == :BRL
-    return i.dest_index
+    return ind(i.dest)
 end
 
 # For repeat start, use src2_index. src1_index may be used if the RPT instruction
 # uses a dmem or other source
-repeat_start(i::AsapInstruction) = i.src2_index
+repeat_start(i::AsapInstruction) = ind(i.src2)
 
 # Similarlym, use the dest_index for the repeat end.
-repeat_end(i::AsapInstruction) = i.dest_index
+repeat_end(i::AsapInstruction) = ind(i.dest)
 
-set_branch_target(x) = (:dest_index => x)
-set_repeat_start(x) = (:src2_index => x)
-set_repeat_end(x) = (:dest_index => x)
+set_branch_target(x) = InstDest(Loc(x))
+set_repeat_start(x) = InstSrc2(Loc(x))
+set_repeat_end(x) = InstDest(Loc(x))

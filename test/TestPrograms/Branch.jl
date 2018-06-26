@@ -134,7 +134,7 @@ end
 
     @label test_label
         MOVI(dmem[0], 1)
-        BRL(:return)
+        BRL(back)
         MOVI(dmem[5], 1)
         MOVI(dmem[6], 1)
         MOVI(dmem[7], 1)

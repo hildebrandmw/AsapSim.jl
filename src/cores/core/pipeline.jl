@@ -10,6 +10,11 @@ isbitset(x::Integer, i) = (x & (1 << i)) != 0
 # Basically clock the core.
 function update!(core::AsapCore)
 
+    @show core.pc
+    @show core.pipeline.stage1
+    @show core.pipeline.stage2
+    @show core.pipeline.stage3
+    @show core.pipeline.stage4
     # First, get a record of all the stall signals that are active this cycle.
     stalls = stall_check(core)
     # Look at Stage 4 to see if a misprediction happened. Must do this before
@@ -273,7 +278,9 @@ end
 #-------------------------------------------------------------------------------
 #                               Stage 2
 #-------------------------------------------------------------------------------
-function dereference(core::AsapCore, operand::Symbol, index::T) where T
+function dereference(core::AsapCore, loc::Loc)
+    operand = sym(loc)
+    index   = ind(loc)
     # If the provided "operand" is accessing an address generater, hardware
     # pointer, or bypass pointer, replace the operand with ":dmem" and the
     # index with the value of the pointer. Otherwise, return `operand` and
@@ -283,12 +290,12 @@ function dereference(core::AsapCore, operand::Symbol, index::T) where T
     if operand == :pointer
         operand = :dmem
         # Add 1 to "index" to convert from 0-based indexing to 1-based indexing.
-        index = T(core.pointers[index + 1])
+        index = Int(core.pointers[index + 1])
 
     # Check for address generator with no increment.
     elseif operand == :ag
         operand = :dmem
-        index = T(read(core.address_generators[index + 1]))
+        index = Int(read(core.address_generators[index + 1]))
 
     # Address generator with increment.
     #
@@ -303,19 +310,19 @@ function dereference(core::AsapCore, operand::Symbol, index::T) where T
         mark(core.address_generators[index + 1])
 
         operand = :dmem
-        index = T(read(core.address_generators[index + 1]))
+        index = Int(read(core.address_generators[index + 1]))
 
     elseif operand == :pointer_bypass
         operand = :dmem
         # Read from the result of Stage 5 (since pipe stages here are the
         # beginning of stage values, this is the computed result of the last
         # Stage 4)
-        index = T(core.pipeline.stage4.result)
+        index = Int(core.pipeline.stage4.result)
     end
 
     # Return new operand and index. If the provided operand was not a
     # dereference, we just return them unchanded.
-    return (operand, index)
+    return Loc(operand, index)
 end
 
 # TODO: Early kill for conditional check.
@@ -347,9 +354,9 @@ function pipeline_stage2(
         # into a DMEM instruction.
 
         # Do dereference checks for each operand of the instruction.
-        src1, src1_index = dereference(core, instruction.src1, instruction.src1_index)
-        src2, src2_index = dereference(core, instruction.src2, instruction.src2_index)
-        dest, dest_index = dereference(core, instruction.dest, instruction.dest_index)
+        dest = dereference(core, instruction.dest)
+        src1 = dereference(core, instruction.src1)
+        src2 = dereference(core, instruction.src2)
 
         # Update all of the address generators that have been read from this cycle.
         for ag in core.address_generators
@@ -357,11 +364,11 @@ function pipeline_stage2(
         end
 
         # Update the instruction in the pipeline.
-        operands = SrcDestCollection(src1, src1_index, src2, src2_index, dest, dest_index)
-        new_instruction = reconstruct(instruction, operands)
+        operands = SrcDestCollection(dest, src1, src2)
+        new_instruction = set(instruction, operands)
         # Replace the instruction in the pipeline with possibly dereferenced version
         # of the instruction.
-        nextstate = reconstruct(stage1, INSTRUCTION(new_instruction))
+        nextstate = set(stage1, INSTRUCTION(new_instruction))
 
         # Check if the instruction was a branch. If so, record the unbranched
         # PC as well as repeat count and return address.
@@ -371,7 +378,7 @@ function pipeline_stage2(
                 pc_unbranched,
                 core.repeat_count,
             )
-            nextstate = reconstruct(nextstate, return_values)
+            nextstate = set(nextstate, return_values)
         end
 
         # Check if this instruction requests any NOPs.
@@ -388,7 +395,9 @@ end
 #                               Stage 3
 #-------------------------------------------------------------------------------
 
-function stage3_read(core::AsapCore, operand::Symbol, index::T) where T
+function stage3_read(core::AsapCore, loc::Loc)
+    operand = sym(loc)
+    index   = ind(loc)
     # Default the return value to 0. If the operand doesn't perform a read
     # this stage, this is what will be returned.
     #
@@ -446,18 +455,10 @@ function pipeline_stage3(core::AsapCore, stall::Bool, mispredict)
     else
 
         # Handle the reading of operands.
-        src1_value = stage3_read(
-            core, 
-            instruction.src1, 
-            instruction.src1_index
-        )
-        src2_value = stage3_read(
-            core, 
-            instruction.src2, 
-            instruction.src2_index
-        )
+        src1_value = stage3_read(core, instruction.src1)
+        src2_value = stage3_read(core, instruction.src2)
 
-        nextstate = reconstruct(stage2, SRC(src1_value, src2_value))
+        nextstate = set(stage2, SRC(src1_value, src2_value))
     end
 
     return nextstate
@@ -481,33 +482,25 @@ function pipeline_stage4(core::AsapCore, stall::Bool, mispredict)
 
 
     # Do a stage 4 read. Provide a default value for already read instructions.
-    src1_value = stage4_read(
-        core,
-        instruction.src1,
-        instruction.src1_index,
-        stage3.src1_value,
-    )
+    src1_value = stage4_read(core, instruction.src1, stage3.src1_value)
+    src2_value = stage4_read(core, instruction.src2, stage3.src2_value)
 
-    src2_value = stage4_read(
-        core,
-        instruction.src2,
-        instruction.src2_index,
-        stage3.src2_value,
-    )
-
-    nextstate = reconstruct(stage3, SRC(src1_value, src2_value))
+    nextstate = set(stage3, SRC(src1_value, src2_value))
 
     # If this is an ALU operation ... do an ALU evaluation.
     if instruction.optype == ALU_TYPE
         result, new_aluflags = stage4_alu(nextstate, core.aluflags, core.condexec)
-        nextstate = reconstruct(nextstate, RESULT(result))
+        nextstate = set(nextstate, RESULT(result))
     end
 
     return nextstate, new_aluflags
 end
 
 
-function stage4_read(core::AsapCore, operand::Symbol, index::T, default::U) where {T,U}
+function stage4_read(core::AsapCore, loc::Loc, default::U) where U
+    operand = sym(loc)
+    index   = ind(loc)
+
     # Default the return value
     return_value::U = default
 
@@ -951,7 +944,7 @@ function pipeline_stage7(core::AsapCore, stall)
 
         # Set core acculator and store result.
         core.accumulator = accumulator
-        nextstate = reconstruct(stage6, RESULT(result))
+        nextstate = set(stage6, RESULT(result))
     else
         nextstate = PipelineEntry()
     end
@@ -1081,13 +1074,13 @@ function pipeline_stage8(core::AsapCore, stall)
     # Select stage 8 for write back if is is not a NOP, it's a MAC operation,
     # and it's destination is not ":null"
     if stage7.instruction.op != :NOP &&
-        stage7.instruction.dest != :null &&
+        sym(stage7.instruction.dest) != :null &&
         stage7.instruction.optype == MAC_TYPE
 
         writeback!(core, stage7)
 
     elseif stage5.instruction.op != :NOP &&
-            stage5.instruction.dest != :null &&
+            sym(stage5.instruction.dest) != :null &&
             stage5.instruction.optype != MAC_TYPE
 
         writeback!(core, stage5)
@@ -1100,8 +1093,8 @@ end
 function writeback!(core::AsapCore, stage::PipelineEntry)
     # Unpack some common information
     instruction = stage.instruction
-    dest        = instruction.dest
-    index       = instruction.dest_index
+    dest        = sym(instruction.dest)
+    index       = ind(instruction.dest)
     result      = stage.result
 
     # Writeback to DMEM

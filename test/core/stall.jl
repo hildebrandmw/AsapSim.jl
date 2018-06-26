@@ -34,12 +34,9 @@
     # Make a test instruction reading from both input fifos and writing to
     # an output fifo.
     test_instruction = AsapSim.AsapInstructionKeyword(
-        src1        = :ibuf,
-        src1_index  = 0,
-        src2        = :ibuf_next,
-        src2_index  = 1,
-        dest        = :output,
-        dest_index  = 0,
+        src1 = Loc(:ibuf, 0),
+        src2 = Loc(:ibuf_next, 1),
+        dest = Loc(:output, 0),
     )
 
     # Since all FIFOs are ready to go, core should not stall.

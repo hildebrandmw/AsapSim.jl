@@ -26,10 +26,8 @@ TestBundle() = TestBundle(Int16[], Int16[], Bool[])
     # 2-long vector for conditional execution.
     condexec = [CondExec(), CondExec()]
 
-    # Template Pipeline Stage. Since they are mutable, we can just mutate this
-    # one to perform the different tests.
+    # Template Pipeline Stage.
     stage = PipelineEntry()
-
 
     # Functions for performing various tests
     function op_tester(
@@ -48,7 +46,7 @@ TestBundle() = TestBundle(Int16[], Int16[], Bool[])
             #
             # Then reinterpret to Int16 since that is the desired type of the
             # pipe stage fields.
-            stage = AsapSim.reconstruct(stage, AsapSim.SRC(src1v, src2v))
+            stage = AsapSim.set(stage, AsapSim.SRC(src1v, src2v))
 
             # Edit the carry flag.
             aluflags = ALUFlags(cin, false, false, false)
@@ -127,6 +125,4 @@ TestBundle() = TestBundle(Int16[], Int16[], Bool[])
         test.cin  = zeros(Bool, length(test.src1))
         op_tester(Signed, +, stage, test, benchmark = benchmark)
     end
-
-
 end

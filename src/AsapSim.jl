@@ -9,6 +9,10 @@ export  @asap4asm,
         AsapCore,
         AsapInstruction,
         AsapInstructionKeyword,
+        InstructionLabelPair,
+        Loc,
+        assemble,
+        # Accessors for Core types.
         dmem
 
 include("assembler/assembler.jl")

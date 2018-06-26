@@ -43,7 +43,7 @@ end
 
     @label add_dmem_0
         ADD(dmem[0], 1, dmem[0], nop3)
-        BRL(:return)
+        BRL(back)
 
     @label exit
         MOVI(dmem[1], 1)

@@ -19,6 +19,7 @@ module TestPrograms
 
     # Simple programs
     include("Simple.jl")
+    include("Sort.jl")
 
 
 
