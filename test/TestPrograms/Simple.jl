@@ -14,9 +14,12 @@
         MOVE(dmem[1], ibuf[0])
         # Subtract DMEM 1 from DMEM 0. This will set the "negative" alu flag if
         # dmem[1] > dmem[0]. Branch based on the outcome of this comparison.
-        SUBU(null, dmem[0], dmem[1])
+        SUBU(null, dmem[0], bypass[1])
         BRL(swap, N, j)
         # Write out DMEM[1]
+        NOP()
+        NOP()
+        NOP()
         MOVE(output[0], dmem[1])
         BRL(start)
 
