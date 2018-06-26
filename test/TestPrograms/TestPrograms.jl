@@ -9,13 +9,16 @@ module TestPrograms
     #  --- Test reading from all sources  --- #
     include("Sources.jl")
     # --- Test writing to all destinations --- #
-    #include("Destinations.jl") (TODO)
+    include("Destinations.jl")
     # --- Test branch behavior --- #
     include("Branch.jl")
     # --- Test RPT Instruction --- #
     include("Repeat.jl")
     # --- Test Conditional Execution --- #
     #include("CondExec.jl") (TODO)
+
+    # Simple programs
+    include("Simple.jl")
 
 
 

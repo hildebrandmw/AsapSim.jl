@@ -33,7 +33,7 @@
 
     # Make a test instruction reading from both input fifos and writing to
     # an output fifo.
-    test_instruction = AsapSim.AsapInstruction(
+    test_instruction = AsapSim.AsapInstructionKeyword(
         src1        = :ibuf,
         src1_index  = 0,
         src2        = :ibuf_next,
@@ -61,7 +61,7 @@
     core.outputs[1].full = false
 
     # New test instruction testing the broadcast mechanism.
-    test_instruction = AsapSim.AsapInstruction(
+    test_instruction = AsapSim.AsapInstructionKeyword(
         dest = :obuf
     )
 

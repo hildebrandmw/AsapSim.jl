@@ -103,16 +103,17 @@ end
     fifo = core.fifos[1]
     write(fifo, fifo_value_1)
     AsapSim.writeupdate!(fifo)
-    # Run the core some more. The MOVI instruction should write back, but the
-    # read from the IBUF should be stalled.
+    # Run the core some more. The MOVI instruction should be stalled in stage 5
+    # before wite back
     runfor(core, 4)
-    @test core.dmem[1] == 10
+    @test core.dmem[1] == 0
     @test core.dmem[2] == 0
     # Write again to the fifo.
     write(fifo, fifo_value_2)
     AsapSim.writeupdate!(fifo)
     runfor(core, 10)
 
+    @test core.dmem[1] == 10
     @test core.dmem[2] == fifo_value_1
     @test core.dmem[3] == fifo_value_2
     @test core.dmem[4] == fifo_value_2
@@ -203,8 +204,8 @@ end
     for i in 0:2
         @test core.dmem[i+1] == 1
     end
-    # Should NOT have written to address 10 - 12
-    for i in 10:12
+    # Should NOT have written to address 5 - 7
+    for i in 5:7
         @test core.dmem[i+1] == 0
     end
 
@@ -225,4 +226,62 @@ end
     @test core.dmem[1] == 10
     @test core.dmem[2] == 10
     @test core.dmem[3] == 10
+
+    # Test doing a function call.
+    core = test_core(TestPrograms.repeat_4())
+    @time runfor(core, 80)
+    # Should have added 1 to dmem[0] 10 times. Since it should have started at
+    # 1, the final value should be 11.
+    @test core.dmem[1] == 11
+    @test core.dmem[2] == 1
+
+    # Test multiple repeat blocks.
+    core = test_core(TestPrograms.repeat_5())
+    @time runfor(core, 80)
+    @test core.dmem[1] == 10
+    @test core.dmem[2] == 10
+end
+
+################################################################################
+# Destination Write Tests
+################################################################################
+
+@testset "Testing Destination Writes" begin
+    # Test writing to hardware pointers.
+    core = test_core(TestPrograms.pointer_write_1())
+    runfor(core, 10)
+    @test core.pointers[1] == 1
+    @test core.pointers[2] == 2
+    @test core.pointers[3] == 3
+    @test core.pointers[4] == 4
+
+    # Test writing to address generators
+    core = test_core(TestPrograms.address_generator_write_1())
+    runfor(core, 20)
+    # AG 0
+    @test core.address_generators[1].start == 10
+    @test core.address_generators[1].stop == 20
+    @test core.address_generators[1].stride == 3
+    # AG 1
+    @test core.address_generators[2].start == 0
+    @test core.address_generators[2].stop == 255
+    @test core.address_generators[2].stride == 255
+    # AG 2
+    @test core.address_generators[3].start == 100
+    @test core.address_generators[3].stop == 0
+    @test core.address_generators[3].stride == 1
+
+    # Write to CX Mask
+    core = test_core(TestPrograms.cxmask_write_1())
+    runfor(core, 10)
+    @test core.condexec[1].mask == signed(UInt16(0xFFFF))
+    @test core.condexec[1].unary_op == :XOR
+    @test core.condexec[1].early_kill == true
+
+    # Test obuf mask write
+    core = test_core(TestPrograms.obufmask_write_1())
+    runfor(core, 10)
+    for i in core.obuf_mask
+        @test i == true
+    end
 end

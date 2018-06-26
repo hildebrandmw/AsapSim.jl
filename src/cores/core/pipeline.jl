@@ -14,11 +14,11 @@ function update!(core::AsapCore)
     stalls = stall_check(core)
     # Look at Stage 4 to see if a misprediction happened. Must do this before
     # next PC is calculated.
-    core.branch_mispredict = checkbranch(core)
+    mispredict = checkbranch(core)
 
     # Evaluate stage 0 - get the next-state signals to avoid changing the
     # state of "core" until the end of the cycle.
-    stage0_nextstate = pipeline_stage0(core, stalls.stall_01)
+    stage0_nextstate = pipeline_stage0(core, stalls.stall_01, mispredict)
 
     # Update pipe stages 1, 2, and 3.
     # These are mutating functions and will change their start-of-stage pipeline
@@ -26,31 +26,36 @@ function update!(core::AsapCore)
     #
     # At the end, we will have to shift these entries in the pipeline according
     # to the set stall signals.
-    pipeline_stage1(
+    stage1_next = pipeline_stage1(
         core, 
-        stalls.stall_01, 
-        core.pc, 
-        core.branch_mispredict, 
+        stage0_nextstate.pc,
         stage0_nextstate.next_pc_unbranched,
     )
-    pipeline_stage2(core, stalls.stall_234, stalls.nop_2)
-    pipeline_stage3(core, stalls.stall_234)
+
+    stage2_next = pipeline_stage2(
+        core, 
+        stalls.stall_234, 
+        stalls.nop_2, 
+        mispredict,
+        stage0_nextstate.next_pc_unbranched,
+    )
+    stage3_next = pipeline_stage3(core, stalls.stall_234, mispredict)
 
     # Stage 4 sets new ALU Flags. Since these flags are used in Stage 5 to
     # evaluate conditional execution, store them here and update the flags
     # at the end of this function.
-    stage4_nextstate = pipeline_stage4(core, stalls.stall_234)
+    stage4_next, stage4_nextstate = pipeline_stage4(core, stalls.stall_234, mispredict)
 
     # Evaluate Stages 5, 6, and 7. These again are mutating functiong with
     # no returned next state.
-    pipeline_stage5(core, stalls.stall_567, stalls.nop_5)
-    pipeline_stage6(core, stalls.stall_567)
-    pipeline_stage7(core, stalls.stall_567)
+    stage5_next = pipeline_stage5(core, stalls.stall_5678, stalls.nop_5)
+    stage6_next = pipeline_stage6(core, stalls.stall_5678)
+    stage7_next = pipeline_stage7(core, stalls.stall_5678)
 
     # Do Stage 8 write-back. Note that this stage never stalls, but after it
     # executes, it turns its instruction into a NOP which avoids further
     # writebacks.
-    pipeline_stage8(core)
+    pipeline_stage8(core, stalls.stall_5678)
 
     # Now commit the updates for Stages 0 and 4
     # TODO: Maybe make these special types that can update core with using a
@@ -68,24 +73,13 @@ function update!(core::AsapCore)
 
     # Shuffle the pipeline - start at the end and move forward.
     pipeline = core.pipeline
-    if !stalls.stall_567
-        pipeline.stage8 = pipeline.stage7
-        pipeline.stage7 = pipeline.stage6
-        pipeline.stage6 = pipeline.stage5
-        # Don't update stage 5 since it will automatically insert NOPS if needed.
-    end
-
-    if !stalls.stall_234
-        pipeline.stage5 = pipeline.stage4
-        pipeline.stage4 = pipeline.stage3
-        pipeline.stage3 = pipeline.stage2
-    end
-
-    if !stalls.stall_01
-        pipeline.stage2 = pipeline.stage1
-        # Set pipeline stage 1 using the PC computed this cycle
-        pipeline_stage1(core, false, stage0_nextstate.pc, false, stage0_nextstate.pc + 1)
-    end
+    pipeline.stage1 = stage1_next
+    pipeline.stage2 = stage2_next
+    pipeline.stage3 = stage3_next
+    pipeline.stage4 = stage4_next
+    pipeline.stage5 = stage5_next
+    pipeline.stage6 = stage6_next
+    pipeline.stage7 = stage7_next
 
     # Clock the read side of the input fifos.
     for fifo in core.fifos
@@ -128,7 +122,7 @@ end
 
 
 # NOTE: Need to think about how to best structure this for testing.
-function pipeline_stage0(core::AsapCore, stall::Bool)
+function pipeline_stage0(core::AsapCore, stall::Bool, mispredict)
     # Initialize the next state values to the current state of the core.
     pc_next = core.pc
     repeat_count_next = core.repeat_count
@@ -146,11 +140,11 @@ function pipeline_stage0(core::AsapCore, stall::Bool)
     # - The direction that branch was taken
     # - PC and repeat counter state before the branch was executed
     # - Branch instruction flags: Jump and Return
-    stage4 = core.pipeline.stage4
+    stage3 = core.pipeline.stage3
 
     # Grab stage 5 to determine if a write is occuring to the return_address
     # register
-    stage5 = core.pipeline.stage5
+    stage4 = core.pipeline.stage4
 
     ## Setup some preliminary variables to use elsewhere
     repeat_loop = core.pc == core.repeat_end && core.repeat_count > 1
@@ -164,13 +158,13 @@ function pipeline_stage0(core::AsapCore, stall::Bool)
 
     # If a past branch was mispredicted, restore the old repeat count because the
     # new one is potentially out-dated
-    if core.branch_mispredict
-        repeat_count_next = stage4.old_repeat_count
+    if mispredict
+        repeat_count_next = stage3.old_repeat_count
 
-    # Check if stage 4 is a RPT instruction. If so, grab the value of the repeat
+    # Check if stage 3 is a RPT instruction. If so, grab the value of the repeat
     # counter and store it.
-    elseif stage4.instruction.op == :RPT
-        repeat_count_next = stage4.src1_value
+    elseif stage3.instruction.op == :RPT
+        repeat_count_next = stage3.src1_value
 
     # Check if PC is equal to the current repeat end block and there are pending
     # repeats. If so, decrement the repeat counter.
@@ -181,9 +175,9 @@ function pipeline_stage0(core::AsapCore, stall::Bool)
     # ---------------------------------- #
     # Update repeat start and end blocks #
     # ---------------------------------- #
-    if stage4.instruction.op == :RPT
-        repeat_start_next = repeat_start(stage4.instruction)
-        repeat_end_next = repeat_end(stage4.instruction)
+    if stage3.instruction.op == :RPT
+        repeat_start_next = repeat_start(stage3.instruction)
+        repeat_end_next = repeat_end(stage3.instruction)
     end
 
     # --------------------- #
@@ -195,18 +189,18 @@ function pipeline_stage0(core::AsapCore, stall::Bool)
     # 2. Stage 5 write to return address
     # 3. Mispredicted non-jump. Restore the old return address.
     # 4. S1 has a new predicted taken branch.
-    if core.branch_mispredict && stage4.instruction.jump
-        return_address_next = stage4.old_alternate_pc
+    if mispredict && stage3.instruction.jump
+        return_address_next = stage3.old_alternate_pc
 
     # If explicitly writing to return_address in Stage 5
-    elseif stage5.instruction.dest == :ret
+    elseif stage4.instruction.dest == :ret
         # TODO: Do a bounds check to make sure this stays in bounds.
         # TODO: Make stage5 instruction a NOP?
-        return_address_next = stage5.result
+        return_address_next = stage4.result
 
     # Check if rolling back a non-jump instruction
-    elseif core.branch_mispredict && !stage4.instruction.jump
-        return_address_next = stage4.old_return_address
+    elseif mispredict && !stage3.instruction.jump
+        return_address_next = stage3.old_return_address
 
     # Check if stage 1 has a predicted-taken jump. If so, save the return
     # address as the next untaken PC.
@@ -216,26 +210,26 @@ function pipeline_stage0(core::AsapCore, stall::Bool)
 
     # ---------------- #
     # Update PC Conter #
-    # ---------------- #
+    # ---------------e #
 
     # Rollback from mispredicted branches
-    if core.branch_mispredict
+    if mispredict
         # If mispredicted branch was a return, go to its return address
-        if stage4.instruction.isreturn
-            pc_next = stage4.old_return_address
+        if stage3.instruction.isreturn
+            pc_next = stage3.old_return_address
 
         # If this branch was auto-taken, restore to its PC + 1
         elseif stage4.instruction.op == :BRL
-            pc_next = stage4.old_alternate_pc
+            pc_next = stage3.old_alternate_pc
 
         # Otherwise, go to its target.
         else
-            pc_next = branch_target(stage4.instruction)
+            pc_next = branch_target(stage3.instruction)
         end
 
     # Do nothing if stalling this stage.
     elseif stall
-        nothing
+        pc_next = core.pc
 
     # Check for autobranching for the instruction in stage 1.
     elseif stage1.instruction.op == :BRL
@@ -262,21 +256,18 @@ end
 #-------------------------------------------------------------------------------
 #                               Stage 1
 #-------------------------------------------------------------------------------
-function pipeline_stage1(core::AsapCore, stall::Bool, pc, mispredict, next_pc)
-    # Read instruction from pipestage.
-    if mispredict
-        core.pipeline.stage1 = PipelineEntry(core, NOP())
-    elseif !stall
-        # TODO: Make this correct.
-        if pc <= length(core.program)
-            instruction = core.program[pc]
-        else
-            instruction = NOP()
-        end
-        # Insert this instruction into the pipeline.
-        core.pipeline.stage1 = PipelineEntry(core, instruction, next_pc)
+function pipeline_stage1(core::AsapCore, pc, next_pc)
+
+    # TODO: Make this correct.
+    if pc <= length(core.program)
+        instruction = core.program[pc]
+    else
+        instruction = NOP()
     end
-    return nothing
+    # Insert this instruction into the pipeline.
+    nextstage = PipelineEntry(instruction)
+
+    return nextstage
 end
 
 #-------------------------------------------------------------------------------
@@ -319,7 +310,7 @@ function dereference(core::AsapCore, operand::Symbol, index::T) where T
         # Read from the result of Stage 5 (since pipe stages here are the
         # beginning of stage values, this is the computed result of the last
         # Stage 4)
-        index = T(core.pipeline.stage5.result)
+        index = T(core.pipeline.stage4.result)
     end
 
     # Return new operand and index. If the provided operand was not a
@@ -327,23 +318,27 @@ function dereference(core::AsapCore, operand::Symbol, index::T) where T
     return (operand, index)
 end
 
-# TODO: Do NOP insertion
 # TODO: Early kill for conditional check.
-function pipeline_stage2(core::AsapCore, stall::Bool, nop::Bool)
-    # Don't do anything if stalled.
-    stall && return nothing
+function pipeline_stage2(
+        core        :: AsapCore, 
+        stall       :: Bool, 
+        nop         :: Bool, 
+        mispredict  :: Bool,
+        pc_unbranched :: Integer,
+    )
+    # Grab the input from stage 1
+    stage1 = core.pipeline.stage1
+    instruction = stage1.instruction
 
-    stage2 = core.pipeline.stage2
-    instruction = stage2.instruction
+    # Next state is unchanged if stalling.
+    stall && return core.pipeline.stage2
+    mispredict && return PipelineEntry()
 
     # Check if we're supposed to insert NOPs. If so, just do that and
     # return.
     if nop
-        core.pipeline.stage2 = PipelineEntry()
         core.pending_nops -= 1
-
-    elseif core.branch_mispredict
-        core.pipeline.stage2 = PipelineEntry()
+        nextstate = PipelineEntry()
 
     else
         # Do pointer dereference checks.
@@ -366,7 +361,18 @@ function pipeline_stage2(core::AsapCore, stall::Bool, nop::Bool)
         new_instruction = reconstruct(instruction, operands)
         # Replace the instruction in the pipeline with possibly dereferenced version
         # of the instruction.
-        core.pipeline.stage2.instruction = new_instruction
+        nextstate = reconstruct(stage1, INSTRUCTION(new_instruction))
+
+        # Check if the instruction was a branch. If so, record the unbranched
+        # PC as well as repeat count and return address.
+        if nextstate.instruction.optype == BRANCH_TYPE
+            return_values = RETURNS(
+                core.return_address,
+                pc_unbranched,
+                core.repeat_count,
+            )
+            nextstate = reconstruct(nextstate, return_values)
+        end
 
         # Check if this instruction requests any NOPs.
         # If so, modify the the NOP counter.
@@ -375,7 +381,7 @@ function pipeline_stage2(core::AsapCore, stall::Bool, nop::Bool)
         end
     end
 
-    return nothing
+    return nextstate
 end
 
 #-------------------------------------------------------------------------------
@@ -396,7 +402,7 @@ function stage3_read(core::AsapCore, operand::Symbol, index::T) where T
         # For immediates, the index in the instruction is the value of the
         # immediate. Note that this also takes core of extended immediates
         # because I'm treating that very loosely.
-        return_value = Int16(index)
+        return_value = signed(UInt16(unsigned(index) & 0xFFFF))
 
     # Check accumulator
     elseif operand == :acc
@@ -407,10 +413,10 @@ function stage3_read(core::AsapCore, operand::Symbol, index::T) where T
     elseif operand == :bypass
         if index == 3
             # Get the result from stage 6
-            return_value = core.pipeline.stage6.result
+            return_value = core.pipeline.stage5.result
         elseif index == 5
             # Get the result from stage 8
-            return_value = core.pipeline.stage8.result
+            return_value = core.pipeline.stage7.result
         end
 
     # Check if using the return address.
@@ -427,70 +433,77 @@ function stage3_read(core::AsapCore, operand::Symbol, index::T) where T
     return return_value
 end
 
-function pipeline_stage3(core::AsapCore, stall::Bool)
+function pipeline_stage3(core::AsapCore, stall::Bool, mispredict)
     # Don't do anything if stalled - skip if instruction is a nop.
-    stage3 = core.pipeline.stage3
-    instruction = stage3.instruction
+    stage2 = core.pipeline.stage2
+    instruction = stage2.instruction
 
-    (stall || instruction.op == :NOP) && return nothing
+    stall                   && return core.pipeline.stage3
+    instruction.op == :NOP  && return PipelineEntry()
 
-    if core.branch_mispredict
-        core.pipeline.stage3 = PipelineEntry()
+    if mispredict
+        nextstate = PipelineEntry()
     else
 
         # Handle the reading of operands.
-        stage3.src1_value = stage3_read(
+        src1_value = stage3_read(
             core, 
             instruction.src1, 
             instruction.src1_index
         )
-        stage3.src2_value = stage3_read(
+        src2_value = stage3_read(
             core, 
             instruction.src2, 
             instruction.src2_index
         )
+
+        nextstate = reconstruct(stage2, SRC(src1_value, src2_value))
     end
 
-    return nothing
+    return nextstate
 end
 
 #-------------------------------------------------------------------------------
 #                               Stage 4
 #-------------------------------------------------------------------------------
-function pipeline_stage4(core::AsapCore, stall::Bool)
+function pipeline_stage4(core::AsapCore, stall::Bool, mispredict)
     # Skip stalls and nops.
-    stage4 = core.pipeline.stage4
-    instruction = stage4.instruction
+    stage3 = core.pipeline.stage3
+    instruction = stage3.instruction
     new_aluflags = core.aluflags
 
-    (stall || instruction.op == :NOP) && return new_aluflags
+    stall                   && return core.pipeline.stage4, new_aluflags
+    instruction.op == :NOP  && return PipelineEntry(), new_aluflags
 
-    # Do a stage 4 read. Provide a default value for already read instructions.
-    stage4.src1_value = stage4_read(
-        core,
-        instruction.src1,
-        instruction.src1_index,
-        stage4.src1_value,
-    )
-
-    stage4.src2_value = stage4_read(
-        core,
-        instruction.src2,
-        instruction.src2_index,
-        stage4.src2_value,
-    )
-
-    # If this is an ALU operation ... do an ALU evaluation.
-    if instruction.optype == ALU_TYPE
-        new_aluflags = stage4_alu(stage4, core.aluflags, core.condexec)
-
-    # Check for mispredicted branches
-    #elseif instruction.optype == BRANCH_TYPE
-    #    core.branch_mispredict = checkbranch(core, stage4)
+    if mispredict
+        return PipelineEntry(), new_aluflags
     end
 
 
-    return new_aluflags
+    # Do a stage 4 read. Provide a default value for already read instructions.
+    src1_value = stage4_read(
+        core,
+        instruction.src1,
+        instruction.src1_index,
+        stage3.src1_value,
+    )
+
+    src2_value = stage4_read(
+        core,
+        instruction.src2,
+        instruction.src2_index,
+        stage3.src2_value,
+    )
+
+    nextstate = reconstruct(stage3, SRC(src1_value, src2_value))
+
+    # If this is an ALU operation ... do an ALU evaluation.
+    if instruction.optype == ALU_TYPE
+        result, new_aluflags = stage4_alu(nextstate, core.aluflags, core.condexec)
+        nextstate = reconstruct(nextstate, RESULT(result))
+    end
+
+    return nextstate, new_aluflags
 end
 
 
@@ -518,11 +531,11 @@ function stage4_read(core::AsapCore, operand::Symbol, index::T, default::U) wher
     # Read from bypass registers 1, 2, and 4.
     elseif operand == :bypass
         if index == 1
-            return_value = core.pipeline.stage5.result
+            return_value = core.pipeline.stage4.result
         elseif index == 2
-            return_value = core.pipeline.stage6.result
+            return_value = core.pipeline.stage5.result
         elseif index == 4
-            return_value = core.pipeline.stage8.result
+            return_value = core.pipeline.stage7.result
         end
     end
 
@@ -567,73 +580,73 @@ function stage4_alu(
     #
     # Addition and subtraction logic, which will share carry detection and
     # saturation at the end, and other more complicated logic.
-
+    result::Int16 = 0
 
     # Unsigned Addition
     if op == :ADDSU || op == :ADDU || op == :ADDS || op == :ADD
-        stage.result, carry_next, overflow_next = asap_add(src1, src2)
+        result, carry_next, overflow_next = asap_add(src1, src2)
     elseif op == :ADDCSU || op == :ADDCU || op == :ADDCS || op == :ADDC
-        stage.result, carry_next, overflow_next = asap_add(src1, src2, flags.carry)
+        result, carry_next, overflow_next = asap_add(src1, src2, flags.carry)
 
     # Unsigned subtraction
     elseif op == :SUBSU || op == :SUBU || op == :SUBS || op == :SUB
-        stage.result, carry_next, overflow_next = asap_add(src1, -src2)
+        result, carry_next, overflow_next = asap_add(src1, -src2)
     elseif op == :SUBCSU || op == :SUBCU || op == :SUBCS || op == :SUBC
-        stage.result, carry_next, overflow_next = asap_add(src1, -src2, !flags.carry)
+        result, carry_next, overflow_next = asap_add(src1, -src2, !flags.carry)
     # Logic operations.
     elseif op == :OR
-        stage.result = src1 | src2
+        result = src1 | src2
     elseif op == :AND
-        stage.result = src1 & src2
+        result = src1 & src2
     elseif op == :XOR
-        stage.result = src1 ⊻ src2
+        result = src1 ⊻ src2
 
     # Move Ops
     elseif op == :MOVE || op == :MOVI
-        stage.result = src1
+        result = src1
     elseif op == :MOVC
-        stage.result = flags.carry ? src1 : src2
+        result = flags.carry ? src1 : src2
     elseif op == :MOVZ
-        stage.result = flags.zero ? src1 : src2
+        result = flags.zero ? src1 : src2
     elseif op == :MOVCX0
-        stage.result = cxflags[1].flag ? src1 : src2
+        result = cxflags[1].flag ? src1 : src2
     elseif op == :MOVCX1
-        stage.result = cxflags[2].flag ? src2 : src2
+        result = cxflags[2].flag ? src2 : src2
 
     # Reduction operators.
     elseif op == :ANDWORD
-        stage.result = (src1 == Int16(0xFFFF)) ? Int16(1) : Int16(0)
+        result = (src1 == Int16(0xFFFF)) ? Int16(1) : Int16(0)
     elseif op == :ORWORD
-        stage.result = (src1 == 0) ? Int16(0) : Int16(1)
+        result = (src1 == 0) ? Int16(0) : Int16(1)
     elseif op == :XORWORD
-        stage.result = isodd(count_ones(src1)) ? Int16(1) : Int16(0)
+        result = isodd(count_ones(src1)) ? Int16(1) : Int16(0)
 
     # Special operators
     elseif op == :BTRV
         error("BTRV not implemented yet")
     elseif op == :LSD
-        stage.result = (src1 < 0) ? count_ones(src1) - 1 : count_zeros(src1) - 1
+        result = (src1 < 0) ? count_ones(src1) - 1 : count_zeros(src1) - 1
     elseif op == :LSDU
-        stage.result = count_zeros(src1)
+        result = count_zeros(src1)
 
     # Shift operations
     elseif op == :SHL
         # Since we store numbers as signed, must check if src2 is negative.
         result = (src2 >= 16 || src2 < 0) ? 0 : Int(src1) << src2
         carry_next = (result & 0x10000) != 0
-        stage.result = Int16(result & 0xFFFF)
+        result = Int16(result & 0xFFFF)
     elseif op == :SHR
         # Shift left 1 so we can capture the carry bit.
         result = Int(unsigned(src1)) << 1
         result = (src2 > 16 || src2 < 0) ? 0 : result >> src2
         # Carry the low bit
         carry_next = (result & 1) != 0
-        stage.result = Int16((result >> 1) & 0xFFFF)
+        result = Int16((result >> 1) & 0xFFFF)
     elseif op == :SRA
         result = Int(src1) << 1
         result = (src2 > 16 || src2 < 0) ? 0 : result >> src2
         carry_next = (result & 1) != 0
-        stage.result = Int16((result >> 1) & 0xFFFF)
+        result = Int16((result >> 1) & 0xFFFF)
 
     # Shift left and carry
     elseif op == :SHLC
@@ -642,7 +655,7 @@ function stage4_alu(
         result = (src2 >= 16 || src2 < 0) ? 0 : result << src2
         # Because of the pre-shift, the new carry is at bit 17
         carry_next = (result & 0x20000) != 0
-        stage.result = Int16((result >> 1) & 0xFFFF)
+        result = Int16((result >> 1) & 0xFFFF)
 
     elseif op == :SHRC # Shift right and carry
         # Insert carry-in on the left.
@@ -650,13 +663,13 @@ function stage4_alu(
         result = (Int(unsigned(src1)) | (Int(flags.carry) << 16)) << 1
         result = (src2 > 16 || src2 < 0) ? 0 : result >> src2
         carry_next = (result & 1) != 0
-        stage.result = Int16((result >> 1) & 0xFFFF)
+        result = Int16((result >> 1) & 0xFFFF)
 
     elseif op == :SRAC
         result = (Int(src1) | Int(flags.carry) << 16) << 1
         result = (src2 > 16 || src2 < 0) ? 0 : result >> src2
         carry_next = (result & 1) != 0
-        stage.result = Int16((result >> 1) & 0xFFFF)
+        result = Int16((result >> 1) & 0xFFFF)
 
     # Unrecognized instruction
     else
@@ -664,11 +677,11 @@ function stage4_alu(
     end
 
     # Update the zero and negative flats.
-    zero_next = stage.result == 0
+    zero_next = result == 0
     negative_next = (stage.result & 0x8000) != 0
 
     # Return the next carry flags.
-    return ALUFlags(
+    return result, ALUFlags(
         carry_next,
         negative_next,
         overflow_next,
@@ -684,7 +697,7 @@ otherwise.
 """
 function checkbranch(core::AsapCore)
     # Get stage 4 of the pipeline.
-    stage = core.pipeline.stage4
+    stage = core.pipeline.stage3
 
     # If this is not a branch, exit early.
     stage.instruction.op == :BR || stage.instruction.op == :BRL || return false
@@ -754,20 +767,21 @@ end
 #-------------------------------------------------------------------------------
 function pipeline_stage5(core::AsapCore, stall::Bool, nop::Bool)
     # Skip if stalled or ALU. If given NOP, replace stage 5 with a NOP.
-    stage5 = core.pipeline.stage5
-    instruction = stage5.instruction
-    (stall || instruction.op == :NOP) && return nothing
+    stage4 = core.pipeline.stage4
+    instruction = stage4.instruction
+    stall                   && return core.pipeline.stage5
+    instruction.op == :NOP  && return PipelineEntry()
 
     # If indicated that this instruction should return a NOP - make it so.
     if nop
-        stage5.instruction = NOP()
-        return nothing
+        return PipelineEntry()
     end
 
     # Okay, we're going ahead with normal execution. Do the stage-5 saturation
     # if requested.
     if instruction.saturate
-        saturate!()
+        nothing
+        #saturate!()
     end
 
     # Handle writeback to return address.
@@ -794,16 +808,18 @@ function pipeline_stage5(core::AsapCore, stall::Bool, nop::Bool)
     elseif instruction.cxflag == CX_TRUE
         # If the flag is not set, make this instruction a NOP
         if !core.condexec[instruction.cxindex + 1].flag
-            stage5.instruction = NOP()
+            return PipelineEntry()
         end
 
     # CXF : Pass if flag is NOT set
     elseif instruction.cxflag == CX_FALSE
         # If the flag IS set, make this a NOP
         if core.condexec[instruction.cxindex + 1].flag
-            stage5.instruction = NOP()
+            return PipelineEntry()
         end
     end
+
+    return stage4
 
 end
 
@@ -908,7 +924,7 @@ end
 
 # Dummy stage to simulate pipelined multiplier. Actual multiplication happens
 # in stage 7.
-pipeline_stage6(core::AsapCore, stall) = nothing
+pipeline_stage6(core::AsapCore, stall) = stall ? core.pipeline.stage6 : core.pipeline.stage5
 
 
 #-------------------------------------------------------------------------------
@@ -922,17 +938,24 @@ high(x) = signed(UInt16((x >> 16) & 0xFFFF))
 
 function pipeline_stage7(core::AsapCore, stall)
     # Get the start of pipe stage and instruction.
-    stage7 = core.pipeline.stage7
-    instruction = stage7.instruction
+    stage6 = core.pipeline.stage6
+    instruction = stage6.instruction
 
     # Don't do anything if stalled.
-    (stall || instruction.op == :NOP) && return nothing
+    stall                   && return core.pipeline.stage7
+    instruction.op == :NOP  && return PipelineEntry()
 
     # Multiply if the instruction is of the correct type.
     if instruction.optype == MAC_TYPE
-        core.accumulator = stage4567_multiply(stage7, core.accumulator)
+        result, accumulator = stage4567_multiply(stage6, core.accumulator)
+
+        # Set core acculator and store result.
+        core.accumulator = accumulator
+        nextstate = reconstruct(stage6, RESULT(result))
+    else
+        nextstate = PipelineEntry()
     end
-    return nothing
+    return nextstate
 end
 
 function stage4567_multiply(stage, accumulator)
@@ -942,61 +965,63 @@ function stage4567_multiply(stage, accumulator)
     op = instruction.op
     src1_value = stage.src1_value
     src2_value = stage.src2_value
+
+    result::Int16 = 0
     # Signed Multiply - return low
     if op == :MULTL
-        stage.result = low(multiply(Signed, src1_value, src2_value))
+        result = low(multiply(Signed, src1_value, src2_value))
     # Unsigned multiply - return low
     elseif op == :MULTLU
-        stage.result = low(multiply(Unsigned, src1_value, src2_value))
+        result = low(multiply(Unsigned, src1_value, src2_value))
     # Signed multiply - return high
     elseif op == :MULTH
-        stage.result = high(multiply(Signed, src1_value, src2_value))
+        result = high(multiply(Signed, src1_value, src2_value))
     # Unsigned multiply - return high
     elseif op == :MULTHU
-        stage.result = high(multiply(Unsigned, src1_value, src2_value))
+        result = high(multiply(Unsigned, src1_value, src2_value))
     # Signed multiply accumulate. Return low bits of accumulator.
     elseif op == :MACL
         # Since the accumulator is signed, just do normal arithmetic with it.
         accumulator += multiply(Signed, src1_value, src2_value)
-        stage.result = low(accumulator)
+        result = low(accumulator)
     # Unsigned multiply accumulate. Return low bits.
     elseif op == :MACLU
         unsigned_result = multiply(Unsigned, src1_value, src2_value) + 
             unsigned(accumulator)
 
         accumulator = signed(unsigned_result)
-        stage.result = low(accumulator)
+        result = low(accumulator)
     # Signed multiply accumulate. Return high bits of accumulator.
     elseif op == :MACH
         accumulator += multiply(Signed, src1_value, src2_value)
-        stage.result = high(accumulator)
+        result = high(accumulator)
     # Unsigned multiply accumulate. Return high bits.
     elseif op == :MACHU
         unsigned_result = multiply(Unsigned, src1_value, src2_value) + 
             unsigned(accumulator)
 
         accumulator = signed(unsigned_result)
-        stage.result = high(accumulator)
+        result = high(accumulator)
 
     # Signed multiply accumulate, wipe accumulator. Return low.
     elseif op == :MACCL
         accumulator = multiply(Signed, src1_value, src2_value)
-        stage.result = low(accumulator)
+        result = low(accumulator)
 
     # Unsigned multiply accumulate, wipe accumulator. Return low.
     elseif op == :MACCLU
         core.accumulaor = signed(multiply(Unsigned, src1_value, src2_value))
-        stage.result = low(accumulator)
+        result = low(accumulator)
 
     # Signed multiply accumulate, wipe accumulator. Return high.
     elseif op == :MACCH
         accumulator = multiply(Signed, src1_value, src2_value)
-        stage.result = high(accumulator)
+        result = high(accumulator)
 
     # Unsigned multiply accumulate, wipe accumulator. Return high.
     elseif op == :MACCHU
         core.accumulaor = signed(multiply(Unsigned, src1_value, src2_value))
-        stage.result = high(accumulator)
+        result = high(accumulator)
 
     # --- Accumulator shifts
     # Pick one of 4 shift amounts depending on src1_value
@@ -1040,7 +1065,7 @@ function stage4567_multiply(stage, accumulator)
     # instruction follows a signed instruction ... 
     accumulator = ((accumulator << 64 - 40) >> (64 - 40))
 
-    return accumulator
+    return result, accumulator
 end
 
 #-------------------------------------------------------------------------------
@@ -1048,38 +1073,73 @@ end
 #-------------------------------------------------------------------------------
 
 # Write back stage
-function pipeline_stage8(core::AsapCore)
-    stage6 = core.pipeline.stage6
-    stage8 = core.pipeline.stage8
+function pipeline_stage8(core::AsapCore, stall)
+    stall && return nothing
+    stage5 = core.pipeline.stage5
+    stage7 = core.pipeline.stage7
 
     # Select stage 8 for write back if is is not a NOP, it's a MAC operation,
     # and it's destination is not ":null"
-    if stage8.instruction.op != :NOP &&
-        stage8.instruction.dest != :null &&
-        stage8.instruction.optype == MAC_TYPE
+    if stage7.instruction.op != :NOP &&
+        stage7.instruction.dest != :null &&
+        stage7.instruction.optype == MAC_TYPE
 
-        writeback!(core, stage8)
+        writeback!(core, stage7)
 
-    elseif stage6.instruction.op != :NOP &&
-            stage6.instruction.dest != :null &&
-            stage6.instruction.optype != MAC_TYPE
+    elseif stage5.instruction.op != :NOP &&
+            stage5.instruction.dest != :null &&
+            stage5.instruction.optype != MAC_TYPE
 
-        writeback!(core, stage6)
-
+        writeback!(core, stage5)
     end
+
+    return nothing
 end
 
 # TODO: Fill this out more completely.
 function writeback!(core::AsapCore, stage::PipelineEntry)
-    # For now, only handle write to DMEM
-    @assert stage.instruction.dest == :dmem
-    @assert stage.instruction.sw
+    # Unpack some common information
+    instruction = stage.instruction
+    dest        = instruction.dest
+    index       = instruction.dest_index
+    result      = stage.result
 
-    address = stage.instruction.dest_index
-    core.dmem[address + 1] = stage.result
+    # Writeback to DMEM
+    if dest == :dmem
+        # For now, only handle write to DMEM
+        @assert stage.instruction.sw
+        core.dmem[index + 1] = stage.result
 
-    # Make this instruction a NOP to avoid multiple write-backs
-    stage.instruction = NOP()
+    # Write to hardware pointers.
+    elseif dest == :set_pointer 
+        # Write to the pointer in question.
+        core.pointers[index + 1] = result
+
+    # Configure AG Start and Stop
+    elseif dest == :ag_start
+        # Get the start and stop values.
+        start = unsigned(result & 0xFF)
+        stop  = unsigned((result >> 8) & 0xFF)
+        set!(core.address_generators[index + 1], start, stop)
+
+    # Configure AG Stride
+    elseif dest == :ag_stride
+        set_stride!(core.address_generators[index + 1], result)
+
+    # Set CX Mask
+    elseif dest == :cxmask
+        set!(core.condexec[index + 1], result)
+
+    # Set OBUF Mask
+    elseif dest == :obuf_mask
+        setobufmask!(core, result) 
+
+    # Write to an output buffer
+    elseif dest == :output
+        write(core.outputs[index + 1], result)
+
+    end
+
 
     return nothing
 end

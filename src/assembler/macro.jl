@@ -211,7 +211,7 @@ function expand(intermediates::Vector{AsapIntermediate})
                 return Expr(:kw, key, value)
             end
         end
-        return :(AsapInstruction(;$(kwargs...)))
+        return :(AsapInstructionKeyword(;$(kwargs...)))
     end
 
     return instructions

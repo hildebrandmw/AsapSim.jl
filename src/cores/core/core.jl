@@ -3,12 +3,13 @@
 # Make this a struct with an API to possibly reimplement as a single integer
 # with bit-twiddling instead of a struct of Bools. Probably not needed but
 # may save some space in the future.
-@with_kw_noshow mutable struct ALUFlags
-    carry       :: Bool = false
-    negative    :: Bool = false
-    overflow    :: Bool = false
-    zero        :: Bool = false
+struct ALUFlags
+    carry       :: Bool
+    negative    :: Bool
+    overflow    :: Bool
+    zero        :: Bool
 end
+ALUFlags() = ALUFlags(false, false, false, false)
 
 # ------------------------- #
 # --- Address Generator --- #
@@ -73,40 +74,69 @@ mutable struct CondExec
 end
 CondExec() = CondExec(false, 0, :OR, false)
 
+function set!(c::CondExec, mask)
+    # Get bit 13 for the early kill.
+    c.early_kill = isbitset(mask, 13)
+
+    # Get bits 12 and 11 for the reduction operator.
+    #
+    # If OO or 01, use OR
+    # If 10, use AND
+    # If 11, use XOR
+    if isbitset(mask, 12)
+        if isbitset(mask, 11)
+            c.unary_op = :XOR
+        else
+            c.unary_op = :AND
+        end
+    else
+        c.unary_op = :OR
+    end
+    c.mask = mask
+    return nothing
+end
+
 # For keeping track of instructions through the pipeline.
 # Essentially just a wrapper for the instruction with an extra slot for the
 # result.
-#
-# TODO: Think about making this immutable. Benchmark to see if it decreases
-# allocation not.
-@with_kw_noshow mutable struct PipelineEntry
-    instruction :: AsapInstruction = NOP()
+struct PipelineEntry
+    instruction :: AsapInstruction# = NOP()
     # The actual source and result values
-    src1_value  :: Int16 = 0
-    src2_value  :: Int16 = 0
-    result      :: Int16 = 0
+    src1_value  :: Int16# = 0
+    src2_value  :: Int16# = 0
+    result      :: Int16# = 0
 
     # Data for rolling-back branches. This doesn't really need to be recorded
     # at every stage, but it will be cleaner to do it this way. It doesn't take
     # that much memory anyways.
-    old_return_address :: Int64 = 0
-    old_alternate_pc   :: Int64 = 0
-    old_repeat_count   :: Int64 = 0
+    old_return_address :: Int64# = 0
+    old_alternate_pc   :: Int64# = 0
+    old_repeat_count   :: Int64# = 0
 end
 
-PipelineEntry(i::AsapInstruction) = PipelineEntry(instruction = i)
-function PipelineEntry(core, inst::AsapInstruction, pc = core.pc + 1)
-    return PipelineEntry(
-        instruction = inst,
-        old_return_address  = core.return_address,
-        old_alternate_pc    = pc,
-        old_repeat_count    = core.repeat_count,
-    )
+PipelineEntry(instruction = NOP()) = PipelineEntry(instruction,0,0,0,0,0,0)
+
+# Convenience types for changing fields of the PipelineEntry immutable
+# struct.
+struct SRC <: Mutator{PipelineEntry}
+    src1_value :: Int16
+    src2_value :: Int16
+end
+struct RESULT <: Mutator{PipelineEntry}
+    result::Int16
+end
+struct INSTRUCTION <: Mutator{PipelineEntry}
+    instruction::AsapInstruction
+end
+struct RETURNS <: Mutator{PipelineEntry}
+    old_return_address :: Int64
+    old_alternate_pc   :: Int64
+    old_repeat_count   :: Int64
 end
 
 # Asap Pipeline.
 #
-# Note: The data in each stage is the START of each stage.
+# Note: The data in each stage is the END of each stage.
 mutable struct AsapPipeline
     stage1 :: PipelineEntry
     stage2 :: PipelineEntry
@@ -115,12 +145,10 @@ mutable struct AsapPipeline
     stage5 :: PipelineEntry
     stage6 :: PipelineEntry
     stage7 :: PipelineEntry
-    stage8 :: PipelineEntry
 end
 
 # Initialize to an empty pipeline.
 AsapPipeline() = AsapPipeline(
-    PipelineEntry(),
     PipelineEntry(),
     PipelineEntry(),
     PipelineEntry(),
@@ -152,7 +180,7 @@ AsapPipeline() = AsapPipeline(
     # Note on Program Counter (pc) - In actual hardware, it is base 0 ...
     # because hardware is base 0. However, Julia is base 1, so we'll have to
     # keep that in mind.
-    pc                  :: Int64 = 1
+    pc                  :: Int64 = 0
 
     # Hardware registers holding information about repeat values.
     repeat_count  :: Int64 = 0
@@ -230,6 +258,15 @@ AsapPipeline() = AsapPipeline(
     pipeline::AsapPipeline = AsapPipeline()
 end
 
+function setobufmask!(core, mask)
+    for index in 1:length(core.obuf_mask)
+        core.obuf_mask[index] = isbitset(mask, index - 1)
+    end
+end
+
+# Convert from index 0 to index 1.
+dmem(core, address) = core.dmem[address + 1]
+
 
 ################################################################################
 # Stall Detection
@@ -246,17 +283,17 @@ Parameters:
     2 has pending NOPS to insert.
 * `nop_2` - Insert NOPs into Stage 2. Happens when there are pending NOPs.
 * `stall_234` - Stall stages 2, 3, and 4. Happens if stalled on fifo.
-* `stall_567` - Stall stages 5, 6, and 7. Happens if stalled on a fifo and none
+* `stall_5678` - Stall stages 5, 6, and 7. Happens if stalled on a fifo and none
     of the destinations in stages 5, 6, and 7 is an output.
 * `nop_5` - Insert NOPS into stage 5. Happens if stalled on an output but
     one of the destinations in stages 5, 6, or 7 is an output.
 """
 struct StallSignals
-    stall_01  :: Bool
-    nop_2     :: Bool
-    stall_234 :: Bool 
-    stall_567 :: Bool
-    nop_5     :: Bool
+    stall_01   :: Bool
+    nop_2      :: Bool
+    stall_234  :: Bool 
+    stall_5678 :: Bool
+    nop_5      :: Bool
 end
 
 function stall_check(core::AsapCore)
@@ -267,7 +304,7 @@ function stall_check(core::AsapCore)
     stall_01 = false
     nop_2 = false
     stall_234 = false
-    stall_567 = false
+    stall_5678 = false
     nop_5 = false
 
     # If we're stalled on a fifo, stall stages 0, 1, 2, 3, and 4.
@@ -284,7 +321,7 @@ function stall_check(core::AsapCore)
 
             nop_5 = true
         else
-            stall_567 = true
+            stall_5678 = true
         end
 
     # Otherwise, stall stages 0 and 1 if stage 2 has pending NOPs or will
@@ -292,7 +329,7 @@ function stall_check(core::AsapCore)
     else
         # Like in the RTL for asap4, if pending nops = 1, we're on the last
         # NOP, so we can stop the NOP signal then.
-        if core.pending_nops > 1
+        if core.pending_nops > 0
             stall_01 = true
             nop_2 = true
         elseif core.pipeline.stage2.instruction.nops > 0
@@ -305,7 +342,7 @@ function stall_check(core::AsapCore)
         stall_01,
         nop_2,
         stall_234,
-        stall_567,
+        stall_5678,
         nop_5,
     )
 end
@@ -325,19 +362,19 @@ Return `true` if the core should stall, `false` otherwise. A core will stall if:
 """
 function stall_fifo_check(core::AsapCore)
     # Get the pipeline stage 4 instruction.
-    stage4 = core.pipeline.stage4
+    stage3 = core.pipeline.stage3
 
-    # Early termination of stage 4 is a NOP - NOPs can't stall.
-    stage4.instruction.op == :NOP && (return false)
+    # Early termination of stage 3 is a NOP - NOPs can't stall.
+    stage3.instruction.op == :NOP && (return false)
 
     # If this instruction is a STALL instruction, pass its mask is found in
     # the src1_value field
-    if stage4.instruction.op == :STALL
-        return stall_check_stall_op(core, stage4.src1_value)        
+    if stage3.instruction.op == :STALL
+        return stall_check_stall_op(core, stage3.src1_value)        
 
     # Otherwise, do a normal stall check.
     else
-        return stall_check_io(core, stage4.instruction)
+        return stall_check_io(core, stage3.instruction)
     end
 end
 

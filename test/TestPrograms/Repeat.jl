@@ -28,3 +28,43 @@ end
     ADD(dmem[2], 1, bypass[3])
     END_RPT()
 end
+
+# Use the RPT instruction to repeatedly call a function.
+@asap4asm function repeat_4()
+    # Move 1 into DMEM 0.
+    #
+    # Our silly little function is going to add this value to itself and then
+    # return.
+    MOVI(dmem[0], 1)
+    RPT(10, nop3)
+        BRL(add_dmem_0, j)
+    END_RPT()
+    BRL(exit)
+
+    @label add_dmem_0
+        ADD(dmem[0], 1, dmem[0], nop3)
+        BRL(:return)
+
+    @label exit
+        MOVI(dmem[1], 1)
+end
+
+# Jump out of one repeat loop into another repeat loop. Make sure that the
+# other repeat loop gets initialized properly.
+@asap4asm function repeat_5()
+    RPT(5, nop3)
+        BRL(second_loop)
+    END_RPT()
+    BRL(exit)
+
+    @label second_loop
+        MOVI(dmem[0], 0, nop3)
+        RPT(10, nop3)
+            ADD(dmem[0], 1, bypass[1])
+        END_RPT()
+        BRL(exit)
+
+    @label exit
+        MOVI(dmem[1], 10)
+end
+

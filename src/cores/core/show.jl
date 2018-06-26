@@ -184,7 +184,7 @@ end
 # CYAN:  Stage is inserting NOPS.
 function show_pipeline(core::AsapCore)
     stall_signals = stall_check(core)
-    core.branch_mispredict = checkbranch(core)
+    mispredict = checkbranch(core)
 
     print_with_color(:white, "Pipeline\n"; bold = true)
 
@@ -196,19 +196,20 @@ function show_pipeline(core::AsapCore)
     print_with_color(color, "Stage 0: No Instruction\n")
 
     # Run Stage 0 to get the next program counter.
-    s0_nextstate = pipeline_stage0(core, stall_signals.stall_01)
+    s0_nextstate = pipeline_stage0(core, stall_signals.stall_01, mispredict)
 
     # Create a instruction for stage 1. Make NOP if PC is out of bounds.
     print_with_color(color, "Stage 1: $(core.pipeline.stage1)\n")
 
     # Select a color for Stage 2
     if stall_signals.stall_234
-        print_with_color(:red, "Stage 2: $(core.pipeline.stage2)\n")
+        color = :red
     elseif stall_signals.nop_2
-        print_with_color(:cyan, "Stage 2: $(PipelineEntry())\n")
+        color = :cyan
     else
-        print_with_color(:white, "Stage 2: $(core.pipeline.stage2)\n")
+        color = :white
     end
+    print_with_color(color, "Stage 2: $(core.pipeline.stage2)\n")
 
     # Select a color for stages 3 and 4.
     color = stall_signals.stall_234 ? (:red) : (:white)
@@ -218,7 +219,7 @@ function show_pipeline(core::AsapCore)
     # Print stage 5 with its myriad of colors.
     if stall_signals.nop_5
         color = :cyan
-    elseif stall_signals.stall_567
+    elseif stall_signals.stall_5678
         color = :red
     else
         color = :white
@@ -226,10 +227,7 @@ function show_pipeline(core::AsapCore)
     print_with_color(color, "Stage 5: $(core.pipeline.stage5)\n")
 
     # Default to Stalled and Unstalled.
-    color = stall_signals.stall_567  ? (:red) : (:white)
+    color = stall_signals.stall_5678  ? (:red) : (:white)
     print_with_color(color, "Stage 6: $(core.pipeline.stage6)\n")
     print_with_color(color, "Stage 7: $(core.pipeline.stage7)\n")
-
-    # Stage 8 never stalls, just print it white.
-    print_with_color(:white, "Stage 8: $(core.pipeline.stage8)\n")
 end

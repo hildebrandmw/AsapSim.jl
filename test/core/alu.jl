@@ -21,7 +21,7 @@ TestBundle() = TestBundle(Int16[], Int16[], Bool[])
     CondExec        = AsapSim.CondExec
     PipelineEntry   = AsapSim.PipelineEntry
     ALUFlags        = AsapSim.ALUFlags
-    AsapInstruction = AsapSim.AsapInstruction
+    AsapInstruction = AsapSim.AsapInstructionKeyword
 
     # 2-long vector for conditional execution.
     condexec = [CondExec(), CondExec()]
@@ -40,7 +40,6 @@ TestBundle() = TestBundle(Int16[], Int16[], Bool[])
             benchmark = false
         ) where T
         # Instantiate new ALU Flags
-        aluflags = ALUFlags()
 
         for (src1v, src2v, cin) in zip(test.src1, test.src2, test.cin)
             # Set the src1_value and src2_value fields
@@ -49,23 +48,22 @@ TestBundle() = TestBundle(Int16[], Int16[], Bool[])
             #
             # Then reinterpret to Int16 since that is the desired type of the
             # pipe stage fields.
-            stage.src1_value = src1v
-            stage.src2_value = src2v
+            stage = AsapSim.reconstruct(stage, AsapSim.SRC(src1v, src2v))
 
             # Edit the carry flag.
-            aluflags.carry = cin
+            aluflags = ALUFlags(cin, false, false, false)
             if benchmark
                 b = @benchmark AsapSim.stage4_alu($stage, $aluflags, $condexec)
                 println("Average time for $(stage.instruction.op): $(mean(b.times))")
             end
-            newflags = AsapSim.stage4_alu(stage, aluflags, condexec)
+            result, newflags = AsapSim.stage4_alu(stage, aluflags, condexec)
 
             # Next the "op" twice so it works correctly if op is "+" or "-".
             if T == Unsigned
                 # Do 2's complement arithmetic on the operands, then convert
                 # everything to "Unsigned" for prettier printing.
                 expected_result = reinterpret(UInt16, op(op(src1v, src2v), Int16(cin)))
-                @test reinterpret(UInt16, stage.result) == expected_result
+                @test reinterpret(UInt16, result) == expected_result
 
                 # Convert the input operands to UInt64. Compute whether there
                 # should be a carry out and test for it.
@@ -83,8 +81,7 @@ TestBundle() = TestBundle(Int16[], Int16[], Bool[])
 
             elseif T == Signed
                 expected_result = op(op(src1v, src2v), Int16(cin))
-                @test stage.result == expected_result
-
+                @test result == expected_result
 
                 # Compute if overflow should have happened by performing
                 # the same operation with full 64-bit numbers and checking if
@@ -106,7 +103,7 @@ TestBundle() = TestBundle(Int16[], Int16[], Bool[])
         # Lets start going down the list.
 
         # --- ADDSU / ADDU ---
-        stage.instruction = AsapInstruction(op = :ADDSU)
+        stage = PipelineEntry(AsapInstruction(op = :ADDSU))
 
         # Loop through a few operand pairs, making sure to have a mix of numbers 
         # that would be negative 16 bit values is interpreted as signed numbers.
@@ -117,19 +114,18 @@ TestBundle() = TestBundle(Int16[], Int16[], Bool[])
         op_tester(Unsigned, +, stage, test, benchmark = benchmark)
 
         # --- ADDCSU / ADDCU ---
-        stage.instruction = AsapInstruction(op = :ADDCSU)
+        stage = PipelineEntry(AsapInstruction(op = :ADDCSU))
         test.src1 = reinterpret.(Int16, [0xFFFE, 0xFFFF, 0x0000, 0x0001, 0x0001])
         test.src2 = reinterpret.(Int16, [0x0000, 0x0000, 0x0000, 0xFFFF, 0xFFFE])
         test.cin  = [true, true, true, false, true]
         op_tester(Unsigned, +, stage, test, benchmark = benchmark)
 
         # --- ADDS / ADD ---
-        stage.instruction = AsapInstruction(op = :ADD)
+        stage = PipelineEntry(AsapInstruction(op = :ADD))
         test.src1 = [ -1  , max_s , min_s,    0]
         test.src2 = [min_s, 3     , max_s, min_s] 
         test.cin  = zeros(Bool, length(test.src1))
         op_tester(Signed, +, stage, test, benchmark = benchmark)
-
     end
 
 

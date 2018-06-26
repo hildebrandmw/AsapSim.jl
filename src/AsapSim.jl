@@ -7,7 +7,9 @@ import AutoAligns
 
 export  @asap4asm,
         AsapCore,
-        AsapInstruction
+        AsapInstruction,
+        AsapInstructionKeyword,
+        dmem
 
 include("assembler/assembler.jl")
 

@@ -312,10 +312,13 @@ function getoptions(args)
     return kwargs
 end
 
-@with_kw_noshow struct AsapInstruction
+
+# NOTE: There seems to be a problem with @with_kw where the type of the returned
+# object cannot be inferred called with no arguments.
+struct AsapInstruction
     # The opcode of the instruction. Set the defaultes for the "with_kw" 
     # constructor to be a "nop" if constructed with no arguments.
-    op :: Symbol = :NOP
+    op :: Symbol# = :NOP
 
     # Sources and destination will come in pairs
     # 1. A Symbol, indication the name of the source or destination. Use symbols
@@ -332,46 +335,101 @@ end
     #    start and end addresses for RPT loops. Convenient setter and accessor
     #    functions will be provided so this doesn't have to be esplicitly 
     #    remembered
-    src1       :: Symbol = :null
-    src1_index :: Int64  = -1
+    src1       :: Symbol# = :null
+    src1_index :: Int64#  = -1
 
-    src2       :: Symbol = :null
-    src2_index :: Int64  = -1
+    src2       :: Symbol# = :null
+    src2_index :: Int64#  = -1
 
-    dest       :: Symbol = :null
-    dest_index :: Int64  = -1
+    dest       :: Symbol# = :null
+    dest_index :: Int64#  = -1
 
     # ------------------------ #
     # Options for instructions #
     # ------------------------ #
 
     # Number of no-ops to put after this instruction.
-    nops :: Int8 = zero(Int8)
+    nops :: Int8# = zero(Int8)
     # Set the "jump" flag for branches
-    jump :: Bool = false
+    jump :: Bool# = false
     # Mark branch instructions as a return instruction.
-    isreturn :: Bool = false
+    isreturn :: Bool# = false
     # conditional execution
     # TODO: Make this an enum for smaller storage?
-    cxflag :: CXFlag = NO_CX
+    cxflag :: CXFlag# = NO_CX
     # Index of the conditional register to use.
-    cxindex::Int8 = zero(Int8)
+    cxindex::Int8# = zero(Int8)
     # Options for writeback to dmem. If "true", single-write will happen
     # Default to this as it should be the common case and to bring it into
     # alignment with the c++ simulator
-    sw::Bool = true
+    sw::Bool# = true
 
     # Metadata for faster decoding during Stage 4 arithmetic or for performing
     # stall detection
-    signed      :: Bool = false
-    saturate    :: Bool = false
+    signed      :: Bool# = false
+    saturate    :: Bool# = false
     # For fast differentiation between ALU and MAC instructions
-    optype          :: OpType   = NOP_TYPE
-    dest_is_output  :: Bool     = false
+    optype          :: OpType#   = NOP_TYPE
+    dest_is_output  :: Bool#     = false
+end
+
+AsapInstruction() = AsapInstruction(
+    :NOP,       # op
+    :null,      # src1 
+    -1,         # src1_index
+    :null,      # src2
+    -1,         # src2_index
+    :null,      # dest
+    -1,         # dest_index
+    zero(Int8), # nops
+    false,      # jump
+    false,      # isreturn
+    NO_CX,      # cxflag
+    zero(Int8), # cxindex
+    true,       # sw
+    false,      # signed
+    false,      # saturate
+    NOP_TYPE,   # optype
+    false,      # dest_is_output
+)
+
+function AsapInstructionKeyword(;
+        op = :NOP,
+        src1 = :null,
+        src1_index = -1,
+        src2 = :null,
+        src2_index = -1,
+        dest = :null,
+        dest_index = -1,
+        nops = zero(Int8),
+        jump = false,
+        isreturn = false,
+        cxflag = NO_CX,
+        cxindex = zero(Int8),
+        sw = true,
+        signed = false,
+        saturate = false,
+        optype = NOP_TYPE,
+        dest_is_output = false
+    )
+
+    return AsapInstruction(
+        op, 
+        src1, src1_index,
+        src2, src2_index,
+        dest, dest_index,
+        nops, jump, isreturn,
+        cxflag, cxindex,
+        sw, signed, saturate,
+        optype,
+        dest_is_output,
+    )
 end
 
 
-immutable SrcDestCollection
+abstract type Mutator{T} end
+
+immutable SrcDestCollection <: Mutator{AsapInstruction}
     src1        :: Symbol
     src1_index  :: Int
     src2        :: Symbol
@@ -388,21 +446,21 @@ end
 #
 # Make this a @generated function so it keeps working even if the other fields
 # of the AsapInstruction change.
-@generated function reconstruct(inst::AsapInstruction, operands::SrcDestCollection)
+@generated function reconstruct(a::T, b::U) where U <: Mutator{T} where T
     # Get the fieldnames for the two arguments.
-    inst_fields = fieldnames(inst)
-    operands_fields = fieldnames(operands)
+    a_fields = fieldnames(T)
+    b_fields = fieldnames(U)
 
     # Build up a list of arguments for a positional constructor of AsapInstruction
     # by iterating ove inst_fields. If a given field is in the SrcDestCollection,
     # use that instead.
-    args = map(inst_fields) do f
-        i = findfirst(operands_fields, f)
+    args = map(a_fields) do f
+        i = findfirst(b_fields, f)
         # If "i" is in the operands fields, return that field.
-        return i > 0 ? :(operands.$f) : :(inst.$f)
+        return i > 0 ? :(b.$f) : :(a.$f)
     end
 
-    return :(AsapInstruction($(args...)))
+    return :(T($(args...)))
 end
 
 # Alias "NOP" to an empty constructor, which should provide a NOP by default.
