@@ -132,7 +132,7 @@ end
         SUBCU(null, low_key_ptr_pi, new_key_2)
         SUBCU(null, low_key_ptr_pi, new_key_3)
 	    #if(Unsigned0_Signed1){
-	    SUBC(null, low_key_ptr_pi, new_key_4, cxs) #Set if carry if true.
+	    SUBC(null, low_key_ptr_pi, new_key_4, cxs0) #Set if carry if true.
 	    #}else{
 	  #  	SUBCU(null, low_key_ptr_pi, new_key_4, cxs) #Set if carry if true.
 	    #}
@@ -216,20 +216,20 @@ end
 	    SUBCU(null, local_key_0_2, local_key_1_2)
 	    SUBCU(null, local_key_0_3, local_key_1_3)
 	    #if(Unsigned0_Signed1){
-	    	SUBC(null, local_key_0_4, local_key_1_4, cxs) #Set if carry is true.
+        SUBC(null, local_key_0_4, local_key_1_4, cxs0) #Set if carry is true.
 	    #}else{
 	    #SUBCU(null, local_key_0_4, local_key_1_4, cxs) #Set if carry is true.
 	    #}
 
 	    # If carry set, key 0 is lower.
-	    MOVI(low_record_ptr_cfg, ag_config_full_record_0, cxt)
-	    MOVI(low_key_ptr_cfg, ag_config_key_0, cxt)
-	    MOVI(high_record_ptr_cfg, ag_config_full_record_1, cxt)
+	    MOVI(low_record_ptr_cfg, ag_config_full_record_0, cxt0)
+        MOVI(low_key_ptr_cfg, ag_config_key_0, cxt0)
+	    MOVI(high_record_ptr_cfg, ag_config_full_record_1, cxt0)
 
 	    # Otherwise key 1 is lower.
-	    MOVI(low_record_ptr_cfg, ag_config_full_record_1, cxf)
-	    MOVI(low_key_ptr_cfg, ag_config_key_1, cxf)
-	    MOVI(high_record_ptr_cfg, ag_config_full_record_0, cxf)
+	    MOVI(low_record_ptr_cfg, ag_config_full_record_1, cxf0)
+	    MOVI(low_key_ptr_cfg, ag_config_key_1, cxf0)
+	    MOVI(high_record_ptr_cfg, ag_config_full_record_0, cxf0)
 
 	    # Ready to get the next record.
 	    BRL(get_new_key)

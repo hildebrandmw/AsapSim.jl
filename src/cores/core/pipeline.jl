@@ -10,11 +10,6 @@ isbitset(x::Integer, i) = (x & (1 << i)) != 0
 # Basically clock the core.
 function update!(core::AsapCore)
 
-    @show core.pc
-    @show core.pipeline.stage1
-    @show core.pipeline.stage2
-    @show core.pipeline.stage3
-    @show core.pipeline.stage4
     # First, get a record of all the stall signals that are active this cycle.
     stalls = stall_check(core)
     # Look at Stage 4 to see if a misprediction happened. Must do this before

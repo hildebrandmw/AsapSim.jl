@@ -61,7 +61,7 @@ function getoccupancy(w, r, buffersize)
     return occupancy
 end
 
-isfull(w, r, buffersize) = getoccupancy(w, r, buffersize) >= buffersize - 1
+isfull(w, r, buffersize) = getoccupancy(w, r, buffersize) >= buffersize - 2
 buffersize(f::DualClockFifo) = length(f.buffer)
 
 function read_occupancy(f::DualClockFifo)

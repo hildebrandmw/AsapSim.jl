@@ -1,3 +1,5 @@
+showprogram(core::AsapCore) = show(STDOUT, core.program, core.pc)
+
 # Method for quickly summarizing a core.
 function summarize(core::AsapCore)
     # Get the stall signals since these are evaluated on each clock cycle and
@@ -130,6 +132,13 @@ function show_hwstate(core::AsapCore)
         print_with_color(:red, "Branch Mispredicted\n")
     else
         print_with_color(:green, "No Branch Mispredict\n")
+    end
+
+    # Print out stall reason if the core is stalled.
+    stall_reason = stall_fifo_check(core)
+    if stall_reason != NoStall
+        println()
+        println("Stall reason: $stall_reason")
     end
 end
 

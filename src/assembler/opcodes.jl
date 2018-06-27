@@ -289,10 +289,10 @@ function getoptions(args)
     end
 
     # Check for conditional execution
-    csx = oneofin((:csx0, :csx1, :cxt0, :cxt1, :cfx0, :cfx1), args)
+    csx = oneofin((:cxs0, :cxs1, :cxt0, :cxt1, :cxf0, :cxf1), args)
     if csx
         # Set flag type
-        if oneofin((:csx0, :csx1), args)
+        if oneofin((:cxs0, :cxs1), args)
             push!(kwargs, (:cxflag => CX_SET))
         elseif oneofin((:cxt0, :cxt1), args)
             push!(kwargs, (:cxflag => CX_TRUE))
@@ -301,7 +301,7 @@ function getoptions(args)
         end
 
         # Figure out the index of the conditional execution flag.
-        if oneofin((:csx0, :cxt0, :cxf0), args)
+        if oneofin((:cxs0, :cxt0, :cxf0), args)
             cx_index = UInt8(0)
         else
             cx_index = UInt8(1)
@@ -468,6 +468,6 @@ repeat_start(i::AsapInstruction) = ind(i.src2)
 # Similarlym, use the dest_index for the repeat end.
 repeat_end(i::AsapInstruction) = ind(i.dest)
 
-set_branch_target(x) = InstDest(Loc(x))
+set_branch_target(t,x) = InstDest(Loc(t,x))
 set_repeat_start(x) = InstSrc2(Loc(x))
 set_repeat_end(x) = InstDest(Loc(x))

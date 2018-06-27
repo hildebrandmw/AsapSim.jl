@@ -13,7 +13,15 @@ export  @asap4asm,
         Loc,
         assemble,
         # Accessors for Core types.
-        dmem
+        dmem,
+        update!,
+        summarize,
+        showprogram,
+        # Fifo Ops
+        iswriteready,
+        writeupdate!,
+        isreadready,
+        readupdate!
 
 include("assembler/assembler.jl")
 

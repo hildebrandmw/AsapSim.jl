@@ -175,7 +175,7 @@ AsapPipeline() = AsapPipeline(
     # --- Program --- #
 
     # Stored program and program counter.
-    program ::Vector{AsapInstruction} = AsapInstruction[]
+    program :: AsapProgram = AsapProgram()
 
     # Note on Program Counter (pc) - In actual hardware, it is base 0 ...
     # because hardware is base 0. However, Julia is base 1, so we'll have to
@@ -296,9 +296,14 @@ struct StallSignals
     nop_5      :: Bool
 end
 
+# Use an ENUM to encode the stall reason.
+@enum StallReason NoStall StallOp EmptyIbuf FullObuf FullObufMask
+
 function stall_check(core::AsapCore)
     # Check if stalled on a FIFO.
-    fifo_stall = stall_fifo_check(core)
+    stallreason = stall_fifo_check(core)
+
+    fifo_stall = stallreason != NoStall
 
     # Default stall signals to "false"
     stall_01 = false
@@ -348,6 +353,7 @@ function stall_check(core::AsapCore)
 end
 
 
+
 """
     stall_fifo_check(core::AsapCore)
 
@@ -360,12 +366,12 @@ Return `true` if the core should stall, `false` otherwise. A core will stall if:
     and outputs will be checked. A stall will be generated if any read input is
     empty or any written-to output is full.
 """
-function stall_fifo_check(core::AsapCore)
+function stall_fifo_check(core::AsapCore) :: StallReason
     # Get the pipeline stage 4 instruction.
     stage3 = core.pipeline.stage3
 
     # Early termination of stage 3 is a NOP - NOPs can't stall.
-    stage3.instruction.op == :NOP && (return false)
+    stage3.instruction.op == :NOP && (return NoStall)
 
     # If this instruction is a STALL instruction, pass its mask is found in
     # the src1_value field
@@ -409,12 +415,12 @@ function stall_check_stall_op(core::AsapCore, mask)
     # --- Check inputs ---
     if mask & (1 << 0) != 0
         # Note: Converting from index 0 to index 1
-        stall_check_ibuf(core, 1, default) != default && return false
+        stall_check_ibuf(core, 1, default) != default && return NoStall
     end
 
     if mask & (1 << 1) != 0
         # Note: Converting from index 0 tio index 1
-        stall_check_ibuf(core, 2, default) != default && return false
+        stall_check_ibuf(core, 2, default) != default && return NoStall
     end
 
     # --- Check obuf mask ---
@@ -422,7 +428,7 @@ function stall_check_stall_op(core::AsapCore, mask)
         # Iterate through the OBUF mask. If a flag is set, check that output.
         for (index, flag) in enumerate(core.obuf_mask)
             flag || continue
-            stall_check_obuf(core, index, default) != default && return false
+            stall_check_obuf(core, index, default) != default && return NoStall
         end
     end
 
@@ -434,7 +440,7 @@ function stall_check_stall_op(core::AsapCore, mask)
         """)
     end
 
-    return default
+    return StallOp
 end
 
 function stall_check_io(core::AsapCore, instruction::AsapInstruction)
@@ -447,27 +453,27 @@ function stall_check_io(core::AsapCore, instruction::AsapInstruction)
     # NOTE: Must do conversion from index 0 to index 1
     if sym(instruction.src1) == :ibuf || sym(instruction.src1) == :ibuf_next
         # The fifo to check should be in the src1_index field of the instruction.
-        stall_check_ibuf(core, ind(instruction.src1) + 1, default) != default && return true
+        stall_check_ibuf(core, ind(instruction.src1) + 1, default) != default && return EmptyIbuf
     end
 
     if sym(instruction.src2) == :ibuf || sym(instruction.src2) == :ibuf_next
-        stall_check_ibuf(core, ind(instruction.src2) + 1, default) != default && return true
+        stall_check_ibuf(core, ind(instruction.src2) + 1, default) != default && return EmptyIbuf
     end
 
     # Check writes to an output
     if sym(instruction.dest) == :output
-        stall_check_obuf(core, ind(instruction.dest) + 1, default) != default && return true
+        stall_check_obuf(core, ind(instruction.dest) + 1, default) != default && return FullObuf
     # Check if doing a broadcast. Then, stall if any of the outputs selected
     # by the obuf_mask are stalling.
     elseif sym(instruction.dest) == :obuf
         for (index, flag) in enumerate(core.obuf_mask)
             flag || continue
-            stall_check_obuf(core, index, default) != default && return true
+            stall_check_obuf(core, index, default) != default && return FullObufMask
         end
     end
 
     # All checks passed, don't stall!
-    return default
+    return NoStall
 end
 
 # Break out the various stall checks into a bunch of little functions.

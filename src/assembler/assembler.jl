@@ -5,6 +5,32 @@ include("show.jl")
 ################################################################################
 # ASSEMBLER
 ################################################################################
+struct AsapProgram
+    instructions :: Vector{AsapInstruction}
+    labels       :: Dict{Symbol, Int}
+end
+
+AsapProgram() = AsapProgram(AsapInstruction[], Dict{Symbol,Int}())
+
+Base.getindex(p::AsapProgram, i) = p.instructions[i]
+Base.length(p::AsapProgram) = length(p.instructions)
+
+function Base.show(io::IO, p::AsapProgram, pc = 0)
+    # Reverse the label dict to go from istruction numbers to symbols.
+    label_rev = Dict(v => k for (k,v) in p.labels)
+    for i in 1:length(p.instructions)
+        # Check if this instruction is the start of a label.
+        if haskey(label_rev, i)
+            println(io, "\n", label_rev[i], ":")
+        end
+
+        # Check if PC is here. If so, mark it with an arrow.
+        leader = i == pc ? "--> " : "    "
+        # Print out instruction.
+        println(io, leader, "$i : $(p.instructions[i])")
+    end
+end
+
 function assemble(temp_program :: Vector{InstructionLabelPair})
     # First - need to take care of END_RPT() instructions.
     handle_rpt!(temp_program)
@@ -29,11 +55,11 @@ function assemble(temp_program :: Vector{InstructionLabelPair})
             # this instruction with a resolved destination.
             branch_target = labeldict[destination]
 
-            program[index] = set(inst, set_branch_target(branch_target))
+            program[index] = set(inst, set_branch_target(destination, branch_target))
         end
     end
 
-    return program
+    return AsapProgram(program, labeldict)
 end
 
 function handle_rpt!(program :: Vector{InstructionLabelPair})
