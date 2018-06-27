@@ -334,7 +334,11 @@ function pipeline_stage2(
 
     # Next state is unchanged if stalling.
     stall && return core.pipeline.stage2
-    mispredict && return PipelineEntry()
+    if mispredict
+        # Must clean out pending NOPs if mispredicted.
+        core.pending_nops = 0
+        return PipelineEntry()
+    end
 
     # Check if we're supposed to insert NOPs. If so, just do that and
     # return.
@@ -468,7 +472,7 @@ function pipeline_stage4(core::AsapCore, stall::Bool, mispredict)
     instruction = stage3.instruction
     new_aluflags = core.aluflags
 
-    stall                   && return core.pipeline.stage4, new_aluflags
+    stall                   && return core.pipeline.stage4, core.aluflags
     instruction.op == :NOP  && return PipelineEntry(), new_aluflags
 
     if mispredict
@@ -484,7 +488,13 @@ function pipeline_stage4(core::AsapCore, stall::Bool, mispredict)
 
     # If this is an ALU operation ... do an ALU evaluation.
     if instruction.optype == ALU_TYPE
-        result, new_aluflags = stage4_alu(nextstate, core.aluflags, core.condexec)
+        result, new_aluflags = stage4_alu(
+            instruction.op, 
+            src1_value,
+            src2_value,
+            core.aluflags, 
+            core.condexec
+        )
         nextstate = set(nextstate, RESULT(result))
     end
 
@@ -506,13 +516,11 @@ function stage4_read(core::AsapCore, loc::Loc, default::U) where U
         # bugs going on, it might be helpful.
         fifo = core.fifos[index + 1]
         return_value = read(fifo)
-        # Send a read request to increment the fifo
-        increment!(fifo)
 
     # Read from FIFO without increment.
     elseif operand == :ibuf_next
         fifo = core.fifos[index + 1]
-        return_value = read(fifo)
+        return_value = peek(fifo)
 
     # TODO: Packet Routers and memory
 
@@ -531,38 +539,70 @@ function stage4_read(core::AsapCore, loc::Loc, default::U) where U
 end
 
 # Helper function.
-function asap_add(x::Int16, y::Int16)
-    # Check carry out
-    cout = (typemax(UInt16) - unsigned(x)) < unsigned(y)
-    result = x + y
-    overflow = (x > 0 && y > 0 && result < 0) || (x < 0 && y < 0 && result > 0)
-    # Return sum and carry-out. Since all arithmetic in Julia is in 2's
-    # complement, we don't need to worry about converting "x" and "y" to
-    # unsigned because we'll get the same end result.
-    return x + y, cout, overflow
+function asap_add(x::Int32, y::Int32)
+    # Julia default to 2's complement arithmetic, so this will return the 
+    # correct result even if arguments are supposed to be unsigned.
+    result_32 = x + y
+    result = signed(UInt16(result_32 & 0xFFFF))
+    cout = isbitset(result, 17)
+    overflow = cout ⊻ isbitset(result, 16)
+
+    return result, cout, overflow
 end
-asap_add(x::Int16, y::Int16, cin::Bool) = asap_add(x, y + Int16(cin))
+
+function asap_add(::Type{Unsigned}, x::Int16, y::Int16, c::Bool = false)
+    asap_add(Int32(unsigned(x)), Int32(unsigned(y)) + Int32(c))
+end
+
+function asap_add(::Type{Signed}, x::Int16, y::Int16, c::Bool = false)
+    asap_add(Int32(x), Int32(y) + Int32(c))
+end
+
+function asap_sub(::Type{Unsigned}, x::Int16, y::Int16, c::Bool = false)
+    asap_add(Int32(unsigned(x)), Int32(-y) - Int32(c))
+end
+
+function asap_sub(::Type{Signed}, x::Int16, y::Int16, c::Bool = false)
+    asap_add(Int32(x), Int32(-y) - Int32(c))
+end
+
+#function asap_add(::Type{T}, x::Int16, y::Int16) where T
+#    # Extend inputs to 32 bits - allows checking of bit 17 for carry out that
+#    # correctly handles signed and unsigned cases.
+#    
+#    # Check carry out
+#    cout = (typemax(UInt16) - unsigned(x)) < unsigned(y)
+#    result = x + y
+#    overflow = (x > 0 && y > 0 && result < 0) || (x < 0 && y < 0 && result > 0)
+#    # Return sum and carry-out. Since all arithmetic in Julia is in 2's
+#    # complement, we don't need to worry about converting "x" and "y" to
+#    # unsigned because we'll get the same end result.
+#    return x + y, cout, overflow
+#end
+#asap_add(x::Int16, y::Int16, cin::Int16) = asap_add(x, y + cin)
 
 function stage4_alu(
-        stage::PipelineEntry,
+        op :: Symbol,
+        src1,
+        src2,
         flags::ALUFlags,
         cxflags::Vector{CondExec}
     )
     # Unpack the instruction from the pipeline stage to get the instruction
     # op code.
-    instruction = stage.instruction
+    #instruction = stage.instruction
 
-    # Get the instruction inputs.
-    src1 = stage.src1_value
-    src2 = stage.src2_value
+    # # Get the instruction inputs.
+    # src1 = stage.src1_value
+    # src2 = stage.src2_value
 
 
     # Convert the carry flag and overflow flags to Int16s
     carry_next = flags.carry
     overflow_next = flags.overflow
 
-    # Begin a big long chain of IF-else cases.
-    op = instruction.op
+    # # Begin a big long chain of IF-else cases.
+    # op = instruction.op
 
     # Break instructions into two categories:
     #
@@ -571,16 +611,24 @@ function stage4_alu(
     result::Int16 = 0
 
     # Unsigned Addition
-    if op == :ADDSU || op == :ADDU || op == :ADDS || op == :ADD
-        result, carry_next, overflow_next = asap_add(src1, src2)
-    elseif op == :ADDCSU || op == :ADDCU || op == :ADDCS || op == :ADDC
-        result, carry_next, overflow_next = asap_add(src1, src2, flags.carry)
+    if op == :ADDSU || op == :ADDU
+        result, carry_next, overflow_next = asap_add(Unsigned, src1, src2)
+    elseif op == :ADDS || op == :ADD
+        result, carry_next, overflow_next = asap_add(Signed, src1, src2)
+    elseif op == :ADDCSU || op == :ADDCU
+        result, carry_next, overflow_next = asap_add(Unsigned, src1, src2, flags.carry)
+    elseif op == :ADDCS || op == :ADDC
+        result, carry_next, overflow_next = asap_add(Signed, src1, src2, flags.carry)
 
     # Unsigned subtraction
-    elseif op == :SUBSU || op == :SUBU || op == :SUBS || op == :SUB
-        result, carry_next, overflow_next = asap_add(src1, -src2)
-    elseif op == :SUBCSU || op == :SUBCU || op == :SUBCS || op == :SUBC
-        result, carry_next, overflow_next = asap_add(src1, -src2, !flags.carry)
+    elseif op == :SUBSU || op == :SUBU 
+        result, carry_next, overflow_next = asap_sub(Unsigned, src1, src2)
+    elseif op == :SUBS || op == :SUB
+        result, carry_next, overflow_next = asap_sub(Signed, src1, src2)
+    elseif op == :SUBCSU || op == :SUBCU
+        result, carry_next, overflow_next = asap_sub(Unsigned, src1, src2, flags.carry)
+    elseif op == :SUBCS || op == :SUBC
+        result, carry_next, overflow_next = asap_sub(Signed, src1, src2, flags.carry)
     # Logic operations.
     elseif op == :OR
         result = src1 | src2
@@ -787,7 +835,7 @@ function pipeline_stage5(core::AsapCore, stall::Bool, nop::Bool)
         # Get the conditional execution unit to use.
         condexec = core.condexec[instruction.cxindex + 1]
 
-        setflag!(condexec, core, stage5)
+        setflag!(condexec, core, stage4)
 
     # Check if this instruction has a conditional execution flag and if
     # it should continue or not.

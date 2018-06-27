@@ -10,11 +10,11 @@
     num_outputs = 8
 
     # Instantiate a specializd core.
-    core = AsapSim.AsapCore{TestFifo}(
+    core = AsapSim.AsapCore{EmptyFullFifo}(
         clock_period = 1,
-        fifos = [TestFifo(), TestFifo()],
+        fifos = [EmptyFullFifo(), EmptyFullFifo()],
         # Populate all 8 output directions.
-        outputs = Dict{Int,TestFifo}(i => TestFifo() for i in 1:num_outputs)
+        outputs = Dict{Int,EmptyFullFifo}(i => EmptyFullFifo() for i in 1:num_outputs)
     )
 
     # ------------------------------- #
@@ -22,7 +22,7 @@
     # ------------------------------- #
 
     # Set all obuf mask bits to 1. For normal instructions, should not stall
-    # right now because all TestFifos are neither empty nor full.
+    # right now because all EmptyFullFifo are neither empty nor full.
     core.obuf_mask = trues(8)
 
     @test AsapSim.stall_check_ibuf(core, 1, false) == false

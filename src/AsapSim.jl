@@ -25,7 +25,10 @@ export  @asap4asm,
 
 include("assembler/assembler.jl")
 
-include("cores/fifo.jl")
+include("cores/fifos/fifo.jl")
+include("cores/fifos/dualclockfifo.jl")
+include("cores/fifos/testfifo.jl")
+
 include("cores/core/core.jl")
 include("cores/core/pipeline.jl")
 include("cores/core/show.jl")

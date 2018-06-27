@@ -53,6 +53,8 @@ function increment!(ag::AddressGenerator)
     # If the address generator does not need to be incremented, do nothing and
     # just return.
     ag.needs_increment || return nothing
+    # Clear increment flag.
+    ag.needs_increment = false
 
     # Save the old pointer value.
     ag.old = ag.current

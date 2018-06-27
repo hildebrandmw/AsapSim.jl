@@ -77,5 +77,6 @@ function show_branch(io::IO, x::AsapInstruction)
     # Print destinations and sources
     print(io, "$(x.dest) ")
     print(io, "$(x.src1) ")
+    show_options(io, x)
     return nothing
 end

@@ -1,21 +1,3 @@
-# Model for dual-clocked fifo.
-import Base: write, read
-
-abstract type AbstractFifo end
-
-# A test fifo for testing various methods involving cores.
-@with_kw mutable struct TestFifo <: AbstractFifo
-    empty :: Bool = false
-    full  :: Bool = false
-end
-
-isreadready(t::TestFifo) = !t.empty
-iswriteready(t::TestFifo) = !t.full
-
-isfull(t::TestFifo) = t.full
-isempty(t::TestFifo) = t.empty
-
-
 # Model of the Asap Dual Clocked Fifos.
 @with_kw mutable struct DualClockFifo{T} <: AbstractFifo
     # Statistics
@@ -61,8 +43,8 @@ function getoccupancy(w, r, buffersize)
     return occupancy
 end
 
-isfull(w, r, buffersize) = getoccupancy(w, r, buffersize) >= buffersize - 2
-buffersize(f::DualClockFifo) = length(f.buffer)
+isfull(w, r, buffersize) = getoccupancy(w, r, buffersize) >= buffersize
+buffersize(f::DualClockFifo) = length(f.buffer) - 1
 
 function read_occupancy(f::DualClockFifo)
     return getoccupancy(
@@ -86,8 +68,12 @@ end
 isreadready(f::DualClockFifo) = f.out_read_valid
 isreadempty(f::DualClockFifo) = f.readside_wr_pointer == f.readside_rd_pointer
 
-increment!(f::DualClockFifo) = (f.in_read_increment = true)
-read(f::DualClockFifo) = f.out_read_data
+peek(f::DualClockFifo) = f.out_read_data
+function read(f::DualClockFifo)
+    data = peek(f)
+    f.in_read_increment = true
+    return data
+end
 
 function readupdate!(f::DualClockFifo)
     # Update write pointer from the write side of the fifo. 

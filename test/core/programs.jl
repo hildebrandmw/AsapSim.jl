@@ -1,8 +1,3 @@
-function runfor(core, cycles)
-    for _ in 1:cycles
-        AsapSim.update!(core)
-    end
-end
 
 @testset "Running Source Tests" begin
 

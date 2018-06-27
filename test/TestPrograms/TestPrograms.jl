@@ -4,7 +4,7 @@ module TestPrograms
     # didn't include the simulator module now would it?
     using AsapSim
 
-    export test_core
+    export test_core, testfifo_core, runfor, writeto!, readfrom!
 
     #  --- Test reading from all sources  --- #
     include("Sources.jl")
@@ -20,6 +20,40 @@ module TestPrograms
     # Simple programs
     include("Simple.jl")
     include("Sort.jl")
+
+    ####################
+    # Helper Functions #
+    ####################
+    function runfor(core, cycles)
+        for _ in 1:cycles
+            AsapSim.update!(core)
+        end
+    end
+
+    function writeto!(fifo, payload, index)
+        # Need to clock fifo to get it to update.
+        for i in 1:AsapSim.buffersize(fifo)
+            writeupdate!(fifo)
+        end
+        while AsapSim.iswriteready(fifo) && index <= length(payload)
+            write(fifo, payload[index])
+            writeupdate!(fifo)
+            index += 1
+        end
+        return index
+    end
+
+    function readfrom!(fifo, buffer)
+        for i in 1:AsapSim.buffersize(fifo)
+            readupdate!(fifo)
+        end
+        while AsapSim.isreadready(fifo)
+            push!(buffer, read(fifo))
+            # Read from the fifo and mark it for incrementing.
+            AsapSim.increment!(fifo)
+            readupdate!(fifo)
+        end
+    end
 
 
 
@@ -51,7 +85,7 @@ module TestPrograms
 
             # Initialize pointers to DMEM addresses. Will initialize DMEM
             # addresses to verify these were dereferenced correctly.
-            pointers = [128, 129, 130, 131]
+            pointers = [128, 129, 130, 131],
         )
 
         # Initialize DMEM.
@@ -69,6 +103,17 @@ module TestPrograms
 
         # Attach the function to the core.
         core.program = program
+
+        return core
+    end
+
+    function testfifo_core(program)
+        core = AsapCore(;
+            program = program,
+            fifos = [AsapSim.TestFifo{Int16}(),AsapSim.TestFifo{Int16}()],
+            outputs = Dict{Int,AsapSim.TestFifo{Int16}}(),
+        )
+
 
         return core
     end

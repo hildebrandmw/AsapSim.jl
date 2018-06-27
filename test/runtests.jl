@@ -24,5 +24,5 @@ using .TestPrograms
 ## Core Component Tests
 #include("core/stall.jl")
 #include("core/alu.jl")
-#include("core/programs.jl")
+include("core/programs.jl")
 include("core/sort.jl")
