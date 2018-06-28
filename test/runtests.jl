@@ -16,13 +16,16 @@ using .TestPrograms
 
 # Assembler tests
 include("assembler/macro.jl")
-include("assembler/test_program.jl")
 
 # Fifo Tests
-#include("fifo.jl")
+# include("fifo.jl")
+# include("cores/fifos/fifo.jl")
+
+# IO Handlers
+include("cores/io/io.jl")
 
 # Core Component Tests
-include("core/stall.jl")
-include("core/alu.jl")
-include("core/programs.jl")
-include("core/sort.jl")
+include("cores/core/stall.jl")
+include("cores/core/alu.jl")
+include("cores/core/programs.jl")
+include("cores/core/sort.jl")

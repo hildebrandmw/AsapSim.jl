@@ -60,11 +60,24 @@ function convertcode(expr::Expr)
     return MacroTools.combinedef(split_expr)
 end
 
+# Put the expression
+#
+# program = InstructionLabelTarget[]
+#
+# At the beginning of the function body - expept that "program" is some 
+# complicated thing given by "gensym" so we don't have to worry about it 
+# clobbering anything in the function.
 function startvector!(function_body :: Expr, program_vector_sym)
     unshift!(function_body.args, :($program_vector_sym = InstructionLabelTarget[]))
 end
 
-
+# Container for holding kwargs to give to the Keyword constructor of 
+# AsapInstruction for a given instruction.
+#
+# Since I changed from using Symbols to encode Source/Destination locations
+# to an Enum, the branch_target can no longer be stored in the instruction
+# itself. Thus, we have to record branch targets as a separate field in this
+# container.
 mutable struct KwargHolder
     kwargs          :: Vector{Pair{Symbol,Any}}
     branch_target   :: Union{Symbol,Void}
@@ -73,6 +86,9 @@ KwargHolder() = KwargHolder(Pair{Symbol,Any}[], nothing)
 
 function replace_instructions(function_body :: Expr, program_vector_sym)
     # Record the last seen label. Attach this to all found assembly instructions.
+    #
+    # MacroTools.postwalk will encounter expressions in program order, so it is
+    # sufficient to keep track of the most recently seen label.
     #
     # When assembling, the label will be resolved to the first instruction that
     # has that label.
@@ -108,6 +124,7 @@ function replace_instructions(function_body :: Expr, program_vector_sym)
                 # replace the expression
                 return new_ex
             end
+
         # Record macro calls
         # The item returned by the @capture will be either a QuoteNode or
         # a Symbol. For consistency sake, always turn it into a Symbol.
@@ -251,9 +268,9 @@ function extract_loc(expr::Expr)
     end
 end
 
-function replace_returns(function_body, program_vector_sym)
+function replace_returns(function_body, program_vector_sym; return_fn = :assemble)
     # Create the expression to replace the returns with.
-    new_ex = :(return assemble($program_vector_sym))
+    new_ex = :(return $return_fn($program_vector_sym))
 
     # Add an empty return at the end of the function body.
     # This will get replaced with the above expression during the pass below.

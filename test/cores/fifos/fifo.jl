@@ -34,14 +34,14 @@
     # ----------------- #
     # No read should be ready because we haven't requested a read yet.
     @test AsapSim.isreadready(fifo) == false
-    AsapSim.increment!(fifo)
+    AsapSim.read(fifo)
     AsapSim.readupdate!(fifo)
 
     @test AsapSim.isreadready(fifo) == true
     @test AsapSim.read(fifo) == 10
 
     # Set another read request before the next update.
-    AsapSim.increment!(fifo)
+    AsapSim.x!(fifo)
     AsapSim.readupdate!(fifo)
     @test AsapSim.isreadready(fifo) == true
     @test AsapSim.read(fifo) == 20

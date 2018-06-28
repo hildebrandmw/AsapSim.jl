@@ -35,5 +35,7 @@ include("cores/core/core.jl")
 include("cores/core/pipeline.jl")
 include("cores/core/show.jl")
 
+include("cores/io/io.jl")
+
 
 end # module

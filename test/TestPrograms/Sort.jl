@@ -277,11 +277,11 @@ end
                 MOVE(output[0], ibuf1)
                 MOVE(output[0], ibuf1)
             else
-                  MOVE(output[1], ibuf1)
-                  MOVE(output[1], ibuf1)
-                  MOVE(output[1], ibuf1)
-                  MOVE(output[1], ibuf1)
-                  MOVE(output[1], ibuf1)
+                MOVE(output[1], ibuf1)
+                MOVE(output[1], ibuf1)
+                MOVE(output[1], ibuf1)
+                MOVE(output[1], ibuf1)
+                MOVE(output[1], ibuf1)
             end 
         END_RPT()
         BRL(get_new_key)

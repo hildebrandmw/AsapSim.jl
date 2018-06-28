@@ -43,8 +43,9 @@ function getoccupancy(w, r, buffersize)
     return occupancy
 end
 
-isfull(w, r, buffersize) = getoccupancy(w, r, buffersize) >= buffersize
-buffersize(f::DualClockFifo) = length(f.buffer) - 1
+isfull(w, r, buffersize, reserve) = getoccupancy(w, r, buffersize) >= buffersize - reserve
+buffersize(f::DualClockFifo) = length(f.buffer)
+reserve(f::DualClockFifo) = 2
 
 function read_occupancy(f::DualClockFifo)
     return getoccupancy(
@@ -106,7 +107,12 @@ end
 # Writing #
 # ------- #
 
-iswriteready(f::DualClockFifo) = !isfull(f.writeside_wr_pointer, f.writeside_rd_pointer, buffersize(f))
+iswriteready(f::DualClockFifo) = !isfull(
+    f.writeside_wr_pointer, 
+    f.writeside_rd_pointer, 
+    buffersize(f),
+    reserve(f)
+)
 iswriteempty(f::DualClockFifo) = f.wr_wr_pointer == f.wr_rd_pointer
 
 function write(fifo::DualClockFifo{T}, data::Integer) where T
