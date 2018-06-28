@@ -42,44 +42,44 @@ end
 
 #Function(Snakesort)
 @asap4asm function snakesort(firstcore, lastcore, lastcore_flush)
-    new_key_4 = Loc(:dmem, 1)
-    new_key_3 = Loc(:dmem, 2)
-    new_key_2 = Loc(:dmem, 3)
-    new_key_1 = Loc(:dmem, 4)
-    new_key_0 = Loc(:dmem, 5)
-    num_records_to_pass = Loc(:dmem, 8)
+    new_key_4 = Loc(AsapSim.DMEM, 1)
+    new_key_3 = Loc(AsapSim.DMEM, 2)
+    new_key_2 = Loc(AsapSim.DMEM, 3)
+    new_key_1 = Loc(AsapSim.DMEM, 4)
+    new_key_0 = Loc(AsapSim.DMEM, 5)
+    num_records_to_pass = Loc(AsapSim.DMEM, 8)
 
     # Record 0 stored between 20 and 69
     # Key is 5 word range starting from low word of key and going backward.
     # So 24 down to 20.
     ag_config_full_record_0 = ((69 << 8) + 20)
     ag_config_key_0         = ((20 << 8 + 24))
-    local_key_0_4 = Loc(:dmem, 20)
-    local_key_0_3 = Loc(:dmem, 21)
-    local_key_0_2 = Loc(:dmem, 22)
-    local_key_0_1 = Loc(:dmem, 23)
-    local_key_0_0 = Loc(:dmem, 24)
+    local_key_0_4 = Loc(AsapSim.DMEM, 20)
+    local_key_0_3 = Loc(AsapSim.DMEM, 21)
+    local_key_0_2 = Loc(AsapSim.DMEM, 22)
+    local_key_0_1 = Loc(AsapSim.DMEM, 23)
+    local_key_0_0 = Loc(AsapSim.DMEM, 24)
 
     # Record 1 stored between 70 and 119
     ag_config_full_record_1 = ((119 << 8) + 70)
     ag_config_key_1         = ((70 << 8) + 74)
-    local_key_1_4 = Loc(:dmem, 70)
-    local_key_1_3 = Loc(:dmem, 71)
-    local_key_1_2 = Loc(:dmem, 72)
-    local_key_1_1 = Loc(:dmem, 73)
-    local_key_1_0 = Loc(:dmem, 74)
+    local_key_1_4 = Loc(AsapSim.DMEM, 70)
+    local_key_1_3 = Loc(AsapSim.DMEM, 71)
+    local_key_1_2 = Loc(AsapSim.DMEM, 72)
+    local_key_1_1 = Loc(AsapSim.DMEM, 73)
+    local_key_1_0 = Loc(AsapSim.DMEM, 74)
 
     low_key_ptr_pi  = :ag0pi
     low_key_ptr     = :ag0
-    low_key_ptr_cfg = Loc(:ag_start, 0)
+    low_key_ptr_cfg = Loc(AsapSim.AG_START, 0)
 
     low_record_ptr_pi  = :ag1pi
     low_record_ptr     = :ag1
-    low_record_ptr_cfg = Loc(:ag_start, 1)
+    low_record_ptr_cfg = Loc(AsapSim.AG_START, 1)
 
     high_record_ptr_pi  = :ag2pi
     high_record_ptr     = :ag
-    high_record_ptr_cfg = Loc(:ag_start, 2)
+    high_record_ptr_cfg = Loc(AsapSim.AG_START, 2)
 
     # Begin main loop.
 

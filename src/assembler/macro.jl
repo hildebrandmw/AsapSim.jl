@@ -12,23 +12,29 @@ macro asap4asm(expr)
     return esc(convertcode(expr))
 end
 
+# Convenience functions for converting symbols to either all caps or all 
+# lowercase.
+symbol_uc(x::Symbol) = Symbol(uppercase(string(x)))
+symbol_lc(x::Symbol) = Symbol(lowercase(string(x)))
+
 # Need to make this mutable since we will potentially modifying and changing
 # some instructions before separating the instructions and labels.
-mutable struct InstructionLabelPair
-    instruction :: AsapInstruction
-    label       :: Union{Symbol,Void}
+mutable struct InstructionLabelTarget
+    instruction   :: AsapInstruction
+    label         :: Union{Symbol,Void}
+    branch_target :: Union{Symbol,Void}
 end
 
 function convertcode(expr::Expr)
     # This macro does the following:
     # 1. Extracts the body of the passed function using MacroTools' excellent
     #    "splitdef" function.
-    # 2. Drop in an empty Vector{InstructionLabelPair} at the beginning of
+    # 2. Drop in an empty Vector{InstructionLabelTarget} at the beginning of
     #    the function.
     # 3. Walk through the body of the function in order, recording the labels
     #    it sees and converting pseudo-assembly function calls into 
-    #    InstructionLabelPairs and appending them to the vector.
-    # 4. Replace each return by passing the Vector{InstructionLabelPairs} with
+    #    InstructionLabelTarget and appending them to the vector.
+    # 4. Replace each return by passing the Vector{InstructionLabelTarget} with
     #    a call to an "assembler" function that will analyze the code to resolve
     #    labels and RPT instructions before returning a final program as a
     #    Vector{AsapInstruction}
@@ -55,8 +61,15 @@ function convertcode(expr::Expr)
 end
 
 function startvector!(function_body :: Expr, program_vector_sym)
-    unshift!(function_body.args, :($program_vector_sym = InstructionLabelPair[]))
+    unshift!(function_body.args, :($program_vector_sym = InstructionLabelTarget[]))
 end
+
+
+mutable struct KwargHolder
+    kwargs          :: Vector{Pair{Symbol,Any}}
+    branch_target   :: Union{Symbol,Void}
+end
+KwargHolder() = KwargHolder(Pair{Symbol,Any}[], nothing)
 
 function replace_instructions(function_body :: Expr, program_vector_sym)
     # Record the last seen label. Attach this to all found assembly instructions.
@@ -75,27 +88,21 @@ function replace_instructions(function_body :: Expr, program_vector_sym)
                 # Parse the arguments for this operation. Expect to recieve a
                 # vector of Pair{Symbol,Any} that represent the arguments to
                 # be passed to an AsapInstructionKeyword constructor.
-                pairs = getpairs(op, args)
-                kwargs = map(pairs) do p
-                    key = p[1]
-                    value = p[2]
-                    # Have to build these expression manually with the :kw head because 
-                    # doing :($kev = $value) is interpreted as some kind of assignment
-                    # rather than passing a keyword argument.
-                    if value isa Symbol
-                        return Expr(:kw, key, Meta.quot(value))
-                    else
-                        return Expr(:kw, key, value)
-                    end
-                end
+                holder = getkwargs(op, args)
+
+                # Check if branch target is in here. If so, extract it and 
+                # record it.
+                kwargs = [Expr(:kw, p[1], p[2]) for p in holder.kwargs]
+                branch_target = holder.branch_target
 
                 # Create an expression pushing the pair of this label and
                 # a AsapInstruction to the program vector.
                 new_ex = :(push!(
                      $program_vector_sym,
-                     InstructionLabelPair(
+                     InstructionLabelTarget(
                         AsapInstructionKeyword(;$(kwargs...)),
-                        $(Meta.quot(label))
+                        $(Meta.quot(label)),
+                        $(Meta.quot(branch_target)),
                      )))
 
                 # replace the expression
@@ -127,10 +134,11 @@ macro pairpush!(kwargs, syms...)
     return esc(:(push!($kwargs, $(symmaps...))))
 end
 
-function getpairs(op, args)
+function getkwargs(op, args)
     # Need to get a collection of keyword arguments to give to the caller for
     # this operation and arguments.
-    kwargs = Vector{Pair{Symbol,Any}}([:op => op])
+    holder = KwargHolder()
+    push!(holder.kwargs, :op => :(AsapSim.$op))
 
     # Get the InstructionDefinition for this operation.
     def = getdef(op)
@@ -140,13 +148,13 @@ function getpairs(op, args)
         # Get the destination label
         destination_label = first(args)
 
-        # Record the destination symbol directly. This will get resolved in
-        # later assembling passes.
-        push!(kwargs, :dest => Loc(destination_label))
+        # Add the branch target to the front of the vector. Upper level routine
+        # will extract it.
+        holder.branch_target = destination_label
 
         # Record if this is a return.
         if destination_label == :back
-            push!(kwargs, :isreturn => true)
+            push!(holder.kwargs, :isreturn => true)
         end
 
         # Remove the destination argument from the vector to avoid using it
@@ -156,10 +164,10 @@ function getpairs(op, args)
         # (TODO) - this is temporary. Need to really first perform a check to
         # see if the caller is providing branch options. Otherwise, need to be
         # a little more precise with how this is handled
-        push!(kwargs, :src1 => Loc(:immediate, make_branch_mask(args)))
+        push!(holder.kwargs, :src1 => Loc(IMMEDIATE, make_branch_mask(args)))
 
         # Get options for this instruction.
-        append!(kwargs, getoptions(args))
+        append!(holder.kwargs, getoptions(args))
 
     # General instruction decoding.
     else
@@ -167,57 +175,71 @@ function getpairs(op, args)
         # remove the destination from the argument list.
         if def.dest
             dest = extract_loc(first(args))
-            @pairpush! kwargs dest
+            @pairpush! holder.kwargs dest
             shift!(args)
         end
 
         # Parse out src1 and src2
         if def.src1
             src1 = extract_loc(first(args))
-            @pairpush! kwargs src1
+            @pairpush! holder.kwargs src1
             shift!(args)
         end
         if def.src2
             src2 = extract_loc(first(args))
-            @pairpush! kwargs src2
+            @pairpush! holder.kwargs src2
         end
 
         # Get options for this instruction.
-        append!(kwargs, getoptions(args))
+        append!(holder.kwargs, getoptions(args))
     end
 
     # Mark the op type and special attributes.
-    push!(kwargs, :optype => def.optype)
+    push!(holder.kwargs, :optype => def.optype)
     if def.signed
-        push!(kwargs, :signed => true)
+        push!(holder.kwargs, :signed => true)
     end
     if def.saturate
-        push!(kwargs, :saturate => true)
+        push!(holder.kwargs, :saturate => true)
     end
-    return kwargs
+    return holder
 end
 
-extract_loc(val::Integer) = :(Loc(:immediate, $val))
+extract_loc(val::Integer) = :(Loc(AsapSim.IMMEDIATE, $val))
 function extract_loc(sym::Symbol) 
-    # if this symbol is a reserved symbol, quote it and return it directly.
-    # Otherwise, assume it is some kind of input and don't wrap the symbol
-    # in a quote
-    if sym in ReservedSymbols
+    # Convert the symbol to all uppercase letters for matching with the
+    # enumerated source/destination locations.
+    sym_upper = symbol_uc(sym)
+
+    # If this symbol is a valid source or destination keyword, return the 
+    # constructor for a Loc based on the SrcDest enum.
+    #
+    # Prefix it with "AsapSim" to avoid scoping issues.
+    if sym_upper in SourceDestSymbols
+        return :(Loc(AsapSim.$sym_upper))
+
+    # Otherwise, check if this is a common keyword. If so, pass the symbol
+    # directly to the constructor 
+    #
+    # i.e., extract_loc(:ibuf0) == :(Loc(:ibuf0))
+    elseif sym in keys(SourceAliases)
         return :(Loc($(Meta.quot(sym))))
+
+    # Otherwise, assume that this is some call-time construct and don't modify
+    # the argument at all.
     else
         return :(Loc($sym))
     end
 end
+
+
 function extract_loc(expr::Expr)
     # Check if this expression is a :ref expression (like "dmem[0]"), if so
     # return the two args (i.e. :dmem and 0)
     if @capture(expr, sym_[ind_])
-        # Check if the symbol is a Reserved Symbol. If so, create the Loc
-        # immediately.
-        #
-        # Otherwise, assume it's defined somewhere else in the main funciton.
-        if sym in ReservedSymbols
-            return :(Loc($(Meta.quot(sym)), $ind))
+        sym_upper = symbol_uc(sym)
+        if sym_upper in SourceDestSymbols
+            return :(Loc(AsapSim.$sym_upper, $ind))
         else
             return :(Loc($expr))
         end
@@ -231,7 +253,7 @@ end
 
 function replace_returns(function_body, program_vector_sym)
     # Create the expression to replace the returns with.
-    new_ex = :(return assemble($(program_vector_sym)))
+    new_ex = :(return assemble($program_vector_sym))
 
     # Add an empty return at the end of the function body.
     # This will get replaced with the above expression during the pass below.

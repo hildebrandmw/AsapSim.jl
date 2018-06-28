@@ -6,10 +6,12 @@ using MacroTools
 import AutoAligns
 
 export  @asap4asm,
+        # AsapOpcode,
+        # SrcDest,
         AsapCore,
         AsapInstruction,
         AsapInstructionKeyword,
-        InstructionLabelPair,
+        InstructionLabelTarget,
         Loc,
         assemble,
         # Accessors for Core types.

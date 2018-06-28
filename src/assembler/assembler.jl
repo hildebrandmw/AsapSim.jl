@@ -31,7 +31,7 @@ function Base.show(io::IO, p::AsapProgram, pc = 0)
     end
 end
 
-function assemble(temp_program :: Vector{InstructionLabelPair})
+function assemble(temp_program :: Vector{InstructionLabelTarget})
     # First - need to take care of END_RPT() instructions.
     handle_rpt!(temp_program)
 
@@ -39,37 +39,38 @@ function assemble(temp_program :: Vector{InstructionLabelPair})
     # split apart the labels and the instructions.
     program = [i.instruction for i in temp_program]
     labels = [i.label for i in temp_program]
+    branch_targets = [i.branch_target for i in temp_program]
 
     # Make a dictionary of the first index where each label is seen.
     labeldict = makelabeldict(labels)
 
     # Set branch targets
     for (index, inst) in enumerate(program)
-        if inst.op == :BR || inst.op == :BRL
-            # Get the destination label.
-            destination = sym(inst.dest)
-            # If this is a "return" - don't do anything
-            destination == :back && continue
+        if inst.op == BR || inst.op == BRL
+            # Get the branch target symbol for this instruction
+            branch_target = branch_targets[index]
 
-            # Otherwise, look up its location in the label dict and replace
-            # this instruction with a resolved destination.
-            branch_target = labeldict[destination]
+            # If this is a return instruction, don't do anything.
+            branch_target == :back && continue
 
-            program[index] = set(inst, set_branch_target(destination, branch_target))
+            # Otherwise, get the index of this label
+            target_index = labeldict[branch_target]
+
+            program[index] = set(inst, set_branch_target(NULL, target_index))
         end
     end
 
     return AsapProgram(program, labeldict)
 end
 
-function handle_rpt!(program :: Vector{InstructionLabelPair})
+function handle_rpt!(program :: Vector{InstructionLabelTarget})
     # Iterate through each element of the intermediate instructions.
     index_of_last_rpt = 0
     index = 1
     while index <= length(program)
         # Get the instruction here
         instruction = program[index].instruction
-        if instruction.op == :END_RPT
+        if instruction.op == END_RPT
             # Save the index of the instruction before this as the end of the
             # repeat block and delete this op from the instruction vector.
             last_rpt = program[index_of_last_rpt].instruction
@@ -79,7 +80,7 @@ function handle_rpt!(program :: Vector{InstructionLabelPair})
             # automatically point to the next instruction since we deleted
             # :END_RPT
             deleteat!(program, index)
-        elseif instruction.op == :RPT
+        elseif instruction.op == RPT
             # Set the start point for this repeat. Since we've removed all
             # END_RPT before this, we don't have to worry about this index
             # getting messed up. 

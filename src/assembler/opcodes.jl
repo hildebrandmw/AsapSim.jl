@@ -1,7 +1,41 @@
-# Set of opcodes in the instruction set for the Asap4 Processor.
+#=
+This is where OpCode definitions and some methods for OpCodes reside.
 
-# Opcode format:
-# 3b condex, 2b NOP, 1b Ext, 9b Src2, 9b Src1, 9b Dest, 6b Opcode.
+Originally, opcodes and source/destination identifiers were to be Symbols, 
+since Symbols in Julia are interned and thus offer themselves to quick 
+comparison. However, I realized that "Symbols" are not actually "bits" types,
+rather they are pointers to the actual symbol data that lives on the heap.
+
+Thus, immutable structs containing Symbols contain a reference and thus seem
+to be heap allocated. This is true even for small structs. I want to avoid this
+because if a bunch of simulated cores are allocating a lot of memory every 
+cycle, this will lead to longer GC times.
+
+DISCLAIMER: I did not benchmark an entire system with the Symbol based 
+implementation because that was not functional at the time. Rather, I switched
+over to the current implementation before the whole system was functional.
+
+--------------------------------------------------------------------------------
+
+The current implementation still uses some of that symbol based ideas, but uses
+Enums to encode opcodes and source/destination identifiers.
+
+These enum types are automatically generated from come base constants, so adding
+op codes should be easy and automatically propogate to the created Enums.
+
+One downside is that referencing Enums now required prefixing everything with
+AsapSim if used outside of this module.
+
+That's generally not a problem because the macro based assembler can take care
+of those non-scoped references.
+=#
+
+
+################################################################################
+# Instruction Definitions
+################################################################################
+
+# This is a collection of the instructions for Asap4.
 
 # Instructions with three operands:
 #   inst dst src1 src2 [options]
@@ -124,37 +158,34 @@ const AsapInstructionList = (
     InstD(:END_RPT, PSUEDO_TYPE, src1 = false, src2 = false, dest = false),
 )
 
+# Gather up all OpCodes and create an Enum out of them.
+#
+# This macro will gather all the opcodes defined above and create an Enum with
+# names corresponding to each opcode.
+#
+# After the invocation of this macro, key words like ADD, STALL, BR will be this
+# enum type.
+#
+# NOTE: Could just place this inside of an eval() block - though I don't know if
+# that would be any cleaner.
+macro MakeOpcodeEnums()
+    enums = [:($(i.opcode)) for i in AsapInstructionList]
+    return esc(:(@enum AsapOpcode $(enums...)))
+end
+@MakeOpcodeEnums
+
 # Create a dictionary mapping opcodes to their instruction definition
 const Instruction_Dict = Dict(i.opcode => i for i in AsapInstructionList)
+
+# Create ways for both the Symbol version and Enum version to access the 
+# Instruction_Dict
 isop(x::Symbol) = haskey(Instruction_Dict, x)
-# Generic fallback
+isop(x::AsapOpcode) = haskey(Instruction_Dict, Symbol(x))
 isop(x) = false
 
 getdef(x::Symbol) = Instruction_Dict[x]
+getdef(x::AsapOpcode) = Instruction_Dict[Symbol(x)]
 
-# Use this "Loc" type to store instruction source/dest information. It will
-# contain a Symbol to identify the name of the source/dest, and an "index" field
-# that will be either a true index for accesses to places like dmem or output,
-# Or store other information such as immediate values.
-struct Loc
-    sym::Symbol
-    ind::Int
-end
-
-Loc() = Loc(:null, -1)
-Loc(x::Int) = Loc(:immediate, x)
-Loc(x::Symbol) = get(SourceAliases, x, Loc(x, -1))
-Loc(x::Loc) = x
-
-Base.:(==)(a::Loc, b::Loc) = (a.sym == b.sym) && (a.ind == b.ind)
-
-Base.convert(::Type{Loc}, x::Int) = Loc(x)
-Base.convert(::Type{Loc}, x::Symbol) = Loc(x)
-
-sym(x::Loc) = x.sym
-ind(x::Loc) = x.ind
-
-Base.show(io::IO, x::Loc) = print(io, "$(sym(x))[$(ind(x))]")
 
 #=
 The general idea here is that a macro will be created that can take
@@ -181,17 +212,17 @@ to recompile any code.
 
 # All the symbols for expected sources in the Asap4 architecture.
 const SourceSymbols = (
-    :dmem,      # data memory (index needed)
-    :immediate, # immediate
-    :ibuf,      # input fifo (index needed)
-    :ibuf_next, # input fifo, no increment (index needed)
-    :bypass,    # bypass resigter (index needed)
-    :pointer,   # dereference hardware pointer (index needed)
-    :ag,        # dereference address generator, no increment (index needed)
-    :ag_pi,     # dereference address generator, increment (index needed)
-    :pointer_bypass, # dereference bypass register 1.
-    :acc,       # read lower 16 bits from accumulator
-    :ret,       # read return address
+    :DMEM,      # data memory (index needed)
+    :IMMEDIATE, # immediate
+    :IBUF,      # input fifo (index needed)
+    :IBUF_NEXT, # input fifo, no increment (index needed)
+    :BYPASS,    # bypass resigter (index needed)
+    :POINTER,   # dereference hardware pointer (index needed)
+    :AG,        # dereference address generator, no increment (index needed)
+    :AG_PI,     # dereference address generator, increment (index needed)
+    :POINTER_BYPASS, # dereference bypass register 1.
+    :ACC,       # read lower 16 bits from accumulator
+    :RET,       # read return address
 
     # --- Unimplemented --- #
     # :external_mem
@@ -200,46 +231,30 @@ const SourceSymbols = (
     # :packet_router_next
 )
 
-const SourceAliases = Dict(
-    # Inputs
-    :ibuf0 => Loc(:ibuf, 0),
-    :ibuf1 => Loc(:ibuf, 1),
-    :ibuf0_next => Loc(:ibuf_next, 0),
-    :ibuf1_next => Loc(:ibuf_next, 1),
-    # Address Generators
-    :ag0pi => Loc(:ag_pi, 0),
-    :ag1pi => Loc(:ag_pi, 1),
-    :ag2pi => Loc(:ag_pi, 2),
-    :ag0   => Loc(:ag, 0),
-    :ag1   => Loc(:ag, 1),
-    :ag2   => Loc(:ag, 2),
-)
-
-
 #-------------------------------------------------------------------------------
 # Destination encoding
 
 const DestinationSymbols = (
-    :dmem,      # data memory (index needed)
+    :DMEM,      # data memory (index needed)
     # TODO: For the dcmem, will probably be helpful to put in aliases for 
     # common operations to help with the readability of assembly.
-    :dcmem,     # dynamic configuration memory (index needed)
-    :pointer,   # set hardware pointers (index needed)
-    :ag,        # dereference address generator, no increment (index needed)
-    :ag_pi,     # dereference address generator, increment (index needed)
-    :pointer_bypass, # dereference bypass register 1
-    :null,       # No write back
-    :output,     # Write to OBUF, directions starting at 0 are:
+    :DCMEM,     # dynamic configuration memory (index needed)
+    :POINTER,   # set hardware pointers (index needed)
+    :AG,        # dereference address generator, no increment (index needed)
+    :AG_PI,     # dereference address generator, increment (index needed)
+    :POINTER_BYPASS, # dereference bypass register 1
+    :NULL,       # No write back
+    :OUTPUT,     # Write to OBUF, directions starting at 0 are:
         # east, north, west, south, right, up, left, down. (index needed)
-    :obuf,       # Write to all output broadcast directions.
-    :obuf_mask,
-    :set_pointer,
-    :ag_start,
-    :ag_stride,
-    :cxmask,
+    :OBUF,       # Write to all output broadcast directions.
+    :OBUF_MASK,
+    :SET_POINTER,
+    :AG_START,
+    :AG_STRIDE,
+    :CXMASK,
 
     # Return from a branch.
-    :back,
+    :BACK,
 
     # --- Unimplemented ---#
     # :external_mem
@@ -249,12 +264,61 @@ const DestinationSymbols = (
     # :start_pulse_test
 )
 
+const SourceDestSymbols = union(SourceSymbols, DestinationSymbols)
 
-const ReservedSymbols = union(SourceSymbols, keys(SourceAliases), DestinationSymbols)
+
+# Do the same trick as we did with Opcodes to create an ENUM for source and
+# Destinations.
+macro MakeSrcDestEnum()
+    vals = [:($i) for i in SourceDestSymbols]
+    return esc(:(@enum SrcDest $(vals...)))
+end
+@MakeSrcDestEnum
+
+
+# Use this "Loc" type to store instruction source/dest information. It will
+# contain a Symbol to identify the name of the source/dest, and an "index" field
+# that will be either a true index for accesses to places like dmem or output,
+# Or store other information such as immediate values.
+struct Loc
+    sym::SrcDest
+    ind::Int
+end
+
+Loc() = Loc(NULL, -1)
+Loc(x::Int) = Loc(IMMEDIATE, x)
+Loc(x::SrcDest) = Loc(x, -1)
+Loc(x::Symbol) = SourceAliases[x]
+Loc(x::Loc) = x
+
+Base.:(==)(a::Loc, b::Loc) = (a.sym == b.sym) && (a.ind == b.ind)
+
+Base.convert(::Type{Loc}, x::Union{Int,Symbol,SrcDest}) = Loc(x)
+
+sym(x::Loc) = x.sym
+ind(x::Loc) = x.ind
+
+Base.show(io::IO, x::Loc) = print(io, "$(sym(x))[$(ind(x))]")
+
+
+const SourceAliases = Dict(
+    # Inputs
+    :ibuf0 => Loc(IBUF, 0),
+    :ibuf1 => Loc(IBUF, 1),
+    :ibuf0_next => Loc(IBUF_NEXT, 0),
+    :ibuf1_next => Loc(IBUF_NEXT, 1),
+    # Address Generators
+    :ag0pi => Loc(AG_PI, 0),
+    :ag1pi => Loc(AG_PI, 1),
+    :ag2pi => Loc(AG_PI, 2),
+    :ag0   => Loc(AG, 0),
+    :ag1   => Loc(AG, 1),
+    :ag2   => Loc(AG, 2),
+)
 
 const DestinationOutputs = (
-    :output,
-    :obuf,
+    OUTPUT,
+    OBUF,
 )
 
 
@@ -322,7 +386,7 @@ end
 struct AsapInstruction
     # The opcode of the instruction. Set the defaultes for the "with_kw" 
     # constructor to be a "nop" if constructed with no arguments.
-    op :: Symbol
+    op :: AsapOpcode
 
     # Source and destination values.
     dest :: Loc
@@ -358,7 +422,7 @@ struct AsapInstruction
 end
 
 AsapInstruction() = AsapInstruction(
-    :NOP,       # op
+    NOP,        # op
     Loc(),      # dest
     Loc(),      # src1
     Loc(),      # src2
@@ -375,7 +439,7 @@ AsapInstruction() = AsapInstruction(
 )
 
 function AsapInstructionKeyword(;
-        op = :NOP,
+        op = NOP,
         dest = Loc(),
         src1 = Loc(),
         src2 = Loc(),
@@ -446,7 +510,7 @@ end
 end
 
 # Alias "NOP" to an empty constructor, which should provide a NOP by default.
-const NOP = AsapInstruction
+const InstNOP = AsapInstruction
 
 
 # Methods on instructions - Since some values may be stored in some 
@@ -457,7 +521,7 @@ const NOP = AsapInstruction
 function branch_target(i::AsapInstruction) 
     # For debugging, ensure that this is only called on branch instructions.
     # If not, something ahs gone wrong.
-    @assert i.op == :BR || i.op == :BRL
+    @assert i.op == BR || i.op == BRL
     return ind(i.dest)
 end
 

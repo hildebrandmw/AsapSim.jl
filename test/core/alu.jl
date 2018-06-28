@@ -134,26 +134,26 @@ TestBundle() = TestBundle(Int16[], Int16[], Bool[])
     # Don't need condiitonal execution flags.
     condexec = AsapSim.CondExec[]
 
-    result, flags = AsapSim.stage4_alu(:SUBU,  Int16(0), Int16(1), flags, condexec)
+    result, flags = AsapSim.stage4_alu(AsapSim.SUBU,  Int16(0), Int16(1), flags, condexec)
     # Subtracting 1 from 0 should result in a carry.
     # Carry should propogate through all stages.
     @test flags.carry == true
     @test result == -1
 
-    result, flags = AsapSim.stage4_alu(:SUBCU, Int16(0), Int16(0), flags, condexec)
+    result, flags = AsapSim.stage4_alu(AsapSim.SUBCU, Int16(0), Int16(0), flags, condexec)
     @test flags.carry == true
     @test result == -1
 
-    result, flags = AsapSim.stage4_alu(:SUBCU, Int16(0), Int16(0), flags, condexec)
+    result, flags = AsapSim.stage4_alu(AsapSim.SUBCU, Int16(0), Int16(0), flags, condexec)
     @test flags.carry == true
     @test result == -1
 
-    result, flags = AsapSim.stage4_alu(:SUBCU, Int16(0), Int16(0), flags, condexec)
+    result, flags = AsapSim.stage4_alu(AsapSim.SUBCU, Int16(0), Int16(0), flags, condexec)
     @test flags.carry == true
     @test result == -1
 
     # Perform a signed subtraction at the end. Carry should still be set.
-    result, flags = AsapSim.stage4_alu(:SUBC, Int16(0), Int16(0), flags, condexec)
+    result, flags = AsapSim.stage4_alu(AsapSim.SUBC, Int16(0), Int16(0), flags, condexec)
     @test flags.carry == true
     @test result == -1
 end

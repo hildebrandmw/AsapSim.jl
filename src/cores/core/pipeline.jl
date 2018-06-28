@@ -163,7 +163,7 @@ function pipeline_stage0(core::AsapCore, stall::Bool, mispredict)
 
     # Check if stage 3 is a RPT instruction. If so, grab the value of the repeat
     # counter and store it.
-    elseif stage3.instruction.op == :RPT
+    elseif stage3.instruction.op == RPT
         repeat_count_next = stage3.src1_value
 
     # Check if PC is equal to the current repeat end block and there are pending
@@ -175,7 +175,7 @@ function pipeline_stage0(core::AsapCore, stall::Bool, mispredict)
     # ---------------------------------- #
     # Update repeat start and end blocks #
     # ---------------------------------- #
-    if stage3.instruction.op == :RPT
+    if stage3.instruction.op == RPT
         repeat_start_next = repeat_start(stage3.instruction)
         repeat_end_next = repeat_end(stage3.instruction)
     end
@@ -193,9 +193,8 @@ function pipeline_stage0(core::AsapCore, stall::Bool, mispredict)
         return_address_next = stage3.old_alternate_pc
 
     # If explicitly writing to return_address in Stage 5
-    elseif stage4.instruction.dest == :ret
+    elseif stage4.instruction.dest == RET
         # TODO: Do a bounds check to make sure this stays in bounds.
-        # TODO: Make stage5 instruction a NOP?
         return_address_next = stage4.result
 
     # Check if rolling back a non-jump instruction
@@ -204,7 +203,7 @@ function pipeline_stage0(core::AsapCore, stall::Bool, mispredict)
 
     # Check if stage 1 has a predicted-taken jump. If so, save the return
     # address as the next untaken PC.
-    elseif !stall && stage1.instruction.op == :BRL && stage1.instruction.jump
+    elseif !stall && stage1.instruction.op == BRL && stage1.instruction.jump
         return_address_next = next_pc_unbranched
     end
 
@@ -219,7 +218,7 @@ function pipeline_stage0(core::AsapCore, stall::Bool, mispredict)
             pc_next = stage3.old_return_address
 
         # If this branch was auto-taken, restore to its PC + 1
-        elseif stage3.instruction.op == :BRL
+        elseif stage3.instruction.op == BRL
             pc_next = stage3.old_alternate_pc
 
         # Otherwise, go to its target.
@@ -232,7 +231,7 @@ function pipeline_stage0(core::AsapCore, stall::Bool, mispredict)
         pc_next = core.pc
 
     # Check for autobranching for the instruction in stage 1.
-    elseif stage1.instruction.op == :BRL
+    elseif stage1.instruction.op == BRL
         if stage1.instruction.isreturn
             pc_next = core.return_address
         else
@@ -262,7 +261,7 @@ function pipeline_stage1(core::AsapCore, pc, next_pc)
     if pc <= length(core.program)
         instruction = core.program[pc]
     else
-        instruction = NOP()
+        instruction = InstNOP()
     end
     # Insert this instruction into the pipeline.
     nextstage = PipelineEntry(instruction)
@@ -282,14 +281,14 @@ function dereference(core::AsapCore, loc::Loc)
     # `index` unchanged.
 
     # Check for "pointer" reference
-    if operand == :pointer
-        operand = :dmem
+    if operand == POINTER
+        operand = DMEM
         # Add 1 to "index" to convert from 0-based indexing to 1-based indexing.
         index = Int(core.pointers[index + 1])
 
     # Check for address generator with no increment.
-    elseif operand == :ag
-        operand = :dmem
+    elseif operand == AG
+        operand = DMEM
         index = Int(read(core.address_generators[index + 1]))
 
     # Address generator with increment.
@@ -297,18 +296,18 @@ function dereference(core::AsapCore, loc::Loc)
     # This just marks the address generator as needing an increment. The actual
     # incremeting operation will happen after all operands in the instruction
     # have had a chance to be dereferenced.
-    elseif operand == :ag_pi
+    elseif operand == AG_PI
         # Mark this generator as needing an update.
         #
         # Do this before updating index - otherwise we're gonna have a bad
         # time ...
         mark(core.address_generators[index + 1])
 
-        operand = :dmem
+        operand = DMEM
         index = Int(read(core.address_generators[index + 1]))
 
-    elseif operand == :pointer_bypass
-        operand = :dmem
+    elseif operand == POINTER_BYPASS
+        operand = DMEM
         # Read from the result of Stage 5 (since pipe stages here are the
         # beginning of stage values, this is the computed result of the last
         # Stage 4)
@@ -406,19 +405,19 @@ function stage3_read(core::AsapCore, loc::Loc)
     return_value::Int16 = 0
 
     # Do a check for immediates.
-    if operand == :immediate
+    if operand == IMMEDIATE
         # For immediates, the index in the instruction is the value of the
         # immediate. Note that this also takes core of extended immediates
         # because I'm treating that very loosely.
         return_value = signed(UInt16(unsigned(index) & 0xFFFF))
 
     # Check accumulator
-    elseif operand == :acc
+    elseif operand == ACC
         # Take the lower 16-bits of the accumulator.
         return_value = signed(UInt16(core.accumulator & 0xFFFF))
 
     # Check bypass registers 3 and 5
-    elseif operand == :bypass
+    elseif operand == BYPASS
         if index == 3
             # Get the result from stage 6
             return_value = core.pipeline.stage5.result
@@ -428,12 +427,12 @@ function stage3_read(core::AsapCore, loc::Loc)
         end
 
     # Check if using the return address.
-    elseif operand == :ret
+    elseif operand == RET
         return_value = core.return_address
 
     # DMEM read - while technically this is routed in Stage 4, we get the
     # correct behavior if we just do the read here.
-    elseif operand == :dmem
+    elseif operand == DMEM
         # Add 1 to index to convert from index 0 to index 1.
         return_value = core.dmem[index + 1]
     end
@@ -447,7 +446,7 @@ function pipeline_stage3(core::AsapCore, stall::Bool, mispredict)
     instruction = stage2.instruction
 
     stall                   && return core.pipeline.stage3
-    instruction.op == :NOP  && return PipelineEntry()
+    instruction.op == NOP   && return PipelineEntry()
 
     if mispredict
         nextstate = PipelineEntry()
@@ -473,7 +472,7 @@ function pipeline_stage4(core::AsapCore, stall::Bool, mispredict)
     new_aluflags = core.aluflags
 
     stall                   && return core.pipeline.stage4, core.aluflags
-    instruction.op == :NOP  && return PipelineEntry(), new_aluflags
+    instruction.op == NOP   && return PipelineEntry(), new_aluflags
 
     if mispredict
         return PipelineEntry(), new_aluflags
@@ -510,7 +509,7 @@ function stage4_read(core::AsapCore, loc::Loc, default::U) where U
     return_value::U = default
 
     # Check if this is a fifo read.
-    if operand == :ibuf
+    if operand == IBUF
         # TODO: Maybe check that the FIFO is indeed ready to be read here.
         # The stall check ... SHOULD ... take care of this, but if there are
         # bugs going on, it might be helpful.
@@ -518,14 +517,14 @@ function stage4_read(core::AsapCore, loc::Loc, default::U) where U
         return_value = read(fifo)
 
     # Read from FIFO without increment.
-    elseif operand == :ibuf_next
+    elseif operand == IBUF_NEXT
         fifo = core.fifos[index + 1]
         return_value = peek(fifo)
 
     # TODO: Packet Routers and memory
 
     # Read from bypass registers 1, 2, and 4.
-    elseif operand == :bypass
+    elseif operand == BYPASS
         if index == 1
             return_value = core.pipeline.stage4.result
         elseif index == 2
@@ -582,7 +581,7 @@ end
 #asap_add(x::Int16, y::Int16, cin::Int16) = asap_add(x, y + cin)
 
 function stage4_alu(
-        op :: Symbol,
+        op :: AsapOpcode,
         src1,
         src2,
         flags::ALUFlags,
@@ -611,81 +610,81 @@ function stage4_alu(
     result::Int16 = 0
 
     # Unsigned Addition
-    if op == :ADDSU || op == :ADDU
+    if op == ADDSU || op == ADDU
         result, carry_next, overflow_next = asap_add(Unsigned, src1, src2)
-    elseif op == :ADDS || op == :ADD
+    elseif op == ADDS || op == ADD
         result, carry_next, overflow_next = asap_add(Signed, src1, src2)
-    elseif op == :ADDCSU || op == :ADDCU
+    elseif op == ADDCSU || op == ADDCU
         result, carry_next, overflow_next = asap_add(Unsigned, src1, src2, flags.carry)
-    elseif op == :ADDCS || op == :ADDC
+    elseif op == ADDCS || op == ADDC
         result, carry_next, overflow_next = asap_add(Signed, src1, src2, flags.carry)
 
     # Unsigned subtraction
-    elseif op == :SUBSU || op == :SUBU 
+    elseif op == SUBSU || op == SUBU 
         result, carry_next, overflow_next = asap_sub(Unsigned, src1, src2)
-    elseif op == :SUBS || op == :SUB
+    elseif op == SUBS || op == SUB
         result, carry_next, overflow_next = asap_sub(Signed, src1, src2)
-    elseif op == :SUBCSU || op == :SUBCU
+    elseif op == SUBCSU || op == SUBCU
         result, carry_next, overflow_next = asap_sub(Unsigned, src1, src2, flags.carry)
-    elseif op == :SUBCS || op == :SUBC
+    elseif op == SUBCS || op == SUBC
         result, carry_next, overflow_next = asap_sub(Signed, src1, src2, flags.carry)
     # Logic operations.
-    elseif op == :OR
+    elseif op == OR
         result = src1 | src2
-    elseif op == :AND
+    elseif op == AND
         result = src1 & src2
-    elseif op == :XOR
+    elseif op == XOR
         result = src1 ⊻ src2
 
     # Move Ops
-    elseif op == :MOVE || op == :MOVI
+    elseif op == MOVE || op == MOVI
         result = src1
-    elseif op == :MOVC
+    elseif op == MOVC
         result = flags.carry ? src1 : src2
-    elseif op == :MOVZ
+    elseif op == MOVZ
         result = flags.zero ? src1 : src2
-    elseif op == :MOVCX0
+    elseif op == MOVCX0
         result = cxflags[1].flag ? src1 : src2
-    elseif op == :MOVCX1
+    elseif op == MOVCX1
         result = cxflags[2].flag ? src2 : src2
 
     # Reduction operators.
-    elseif op == :ANDWORD
+    elseif op == ANDWORD
         result = (src1 == Int16(0xFFFF)) ? Int16(1) : Int16(0)
-    elseif op == :ORWORD
+    elseif op == ORWORD
         result = (src1 == 0) ? Int16(0) : Int16(1)
-    elseif op == :XORWORD
+    elseif op == XORWORD
         result = isodd(count_ones(src1)) ? Int16(1) : Int16(0)
 
     # Special operators
-    elseif op == :BTRV
+    elseif op == BTRV
         error("BTRV not implemented yet")
-    elseif op == :LSD
+    elseif op == LSD
         result = (src1 < 0) ? count_ones(src1) - 1 : count_zeros(src1) - 1
-    elseif op == :LSDU
+    elseif op == LSDU
         result = count_zeros(src1)
 
     # Shift operations
-    elseif op == :SHL
+    elseif op == SHL
         # Since we store numbers as signed, must check if src2 is negative.
         result = (src2 >= 16 || src2 < 0) ? 0 : Int(src1) << src2
         carry_next = (result & 0x10000) != 0
         result = Int16(result & 0xFFFF)
-    elseif op == :SHR
+    elseif op == SHR
         # Shift left 1 so we can capture the carry bit.
         result = Int(unsigned(src1)) << 1
         result = (src2 > 16 || src2 < 0) ? 0 : result >> src2
         # Carry the low bit
         carry_next = (result & 1) != 0
         result = Int16((result >> 1) & 0xFFFF)
-    elseif op == :SRA
+    elseif op == SRA
         result = Int(src1) << 1
         result = (src2 > 16 || src2 < 0) ? 0 : result >> src2
         carry_next = (result & 1) != 0
         result = Int16((result >> 1) & 0xFFFF)
 
     # Shift left and carry
-    elseif op == :SHLC
+    elseif op == SHLC
         # Insert carry on the right - preshift by 1
         result = Int(src1) << 1 | Int(flags.carry)
         result = (src2 >= 16 || src2 < 0) ? 0 : result << src2
@@ -693,7 +692,7 @@ function stage4_alu(
         carry_next = (result & 0x20000) != 0
         result = Int16((result >> 1) & 0xFFFF)
 
-    elseif op == :SHRC # Shift right and carry
+    elseif op == SHRC # Shift right and carry
         # Insert carry-in on the left.
         # Make room for carry out on the right by left-shifting by 1
         result = (Int(unsigned(src1)) | (Int(flags.carry) << 16)) << 1
@@ -701,7 +700,7 @@ function stage4_alu(
         carry_next = (result & 1) != 0
         result = Int16((result >> 1) & 0xFFFF)
 
-    elseif op == :SRAC
+    elseif op == SRAC
         result = (Int(src1) | Int(flags.carry) << 16) << 1
         result = (src2 > 16 || src2 < 0) ? 0 : result >> src2
         carry_next = (result & 1) != 0
@@ -736,13 +735,13 @@ function checkbranch(core::AsapCore)
     stage = core.pipeline.stage3
 
     # If this is not a branch, exit early.
-    stage.instruction.op == :BR || stage.instruction.op == :BRL || return false
+    stage.instruction.op == BR || stage.instruction.op == BRL || return false
 
     # Determine if this branch is predicted taken or not.
     #
     # Assume that the check for the branch instruction has happened before entry
     # into this function.
-    predict_taken = (stage.instruction.op == :BRL)
+    predict_taken = (stage.instruction.op == BRL)
 
     # Get the branch mask from the instruction.
     aluflags = core.aluflags
@@ -806,7 +805,7 @@ function pipeline_stage5(core::AsapCore, stall::Bool, nop::Bool)
     stage4 = core.pipeline.stage4
     instruction = stage4.instruction
     stall                   && return core.pipeline.stage5
-    instruction.op == :NOP  && return PipelineEntry()
+    instruction.op == NOP  && return PipelineEntry()
 
     # If indicated that this instruction should return a NOP - make it so.
     if nop
@@ -979,7 +978,7 @@ function pipeline_stage7(core::AsapCore, stall)
 
     # Don't do anything if stalled.
     stall                   && return core.pipeline.stage7
-    instruction.op == :NOP  && return PipelineEntry()
+    instruction.op == NOP  && return PipelineEntry()
 
     # Multiply if the instruction is of the correct type.
     if instruction.optype == MAC_TYPE
@@ -1004,35 +1003,35 @@ function stage4567_multiply(stage, accumulator)
 
     result::Int16 = 0
     # Signed Multiply - return low
-    if op == :MULTL
+    if op == MULTL
         result = low(multiply(Signed, src1_value, src2_value))
     # Unsigned multiply - return low
-    elseif op == :MULTLU
+    elseif op == MULTLU
         result = low(multiply(Unsigned, src1_value, src2_value))
     # Signed multiply - return high
-    elseif op == :MULTH
+    elseif op == MULTH
         result = high(multiply(Signed, src1_value, src2_value))
     # Unsigned multiply - return high
-    elseif op == :MULTHU
+    elseif op == MULTHU
         result = high(multiply(Unsigned, src1_value, src2_value))
     # Signed multiply accumulate. Return low bits of accumulator.
-    elseif op == :MACL
+    elseif op == MACL
         # Since the accumulator is signed, just do normal arithmetic with it.
         accumulator += multiply(Signed, src1_value, src2_value)
         result = low(accumulator)
     # Unsigned multiply accumulate. Return low bits.
-    elseif op == :MACLU
+    elseif op == MACLU
         unsigned_result = multiply(Unsigned, src1_value, src2_value) + 
             unsigned(accumulator)
 
         accumulator = signed(unsigned_result)
         result = low(accumulator)
     # Signed multiply accumulate. Return high bits of accumulator.
-    elseif op == :MACH
+    elseif op == MACH
         accumulator += multiply(Signed, src1_value, src2_value)
         result = high(accumulator)
     # Unsigned multiply accumulate. Return high bits.
-    elseif op == :MACHU
+    elseif op == MACHU
         unsigned_result = multiply(Unsigned, src1_value, src2_value) + 
             unsigned(accumulator)
 
@@ -1040,22 +1039,22 @@ function stage4567_multiply(stage, accumulator)
         result = high(accumulator)
 
     # Signed multiply accumulate, wipe accumulator. Return low.
-    elseif op == :MACCL
+    elseif op == MACCL
         accumulator = multiply(Signed, src1_value, src2_value)
         result = low(accumulator)
 
     # Unsigned multiply accumulate, wipe accumulator. Return low.
-    elseif op == :MACCLU
+    elseif op == MACCLU
         core.accumulaor = signed(multiply(Unsigned, src1_value, src2_value))
         result = low(accumulator)
 
     # Signed multiply accumulate, wipe accumulator. Return high.
-    elseif op == :MACCH
+    elseif op == MACCH
         accumulator = multiply(Signed, src1_value, src2_value)
         result = high(accumulator)
 
     # Unsigned multiply accumulate, wipe accumulator. Return high.
-    elseif op == :MACCHU
+    elseif op == MACCHU
         core.accumulaor = signed(multiply(Unsigned, src1_value, src2_value))
         result = high(accumulator)
 
@@ -1068,7 +1067,7 @@ function stage4567_multiply(stage, accumulator)
     # Always return low bits of accumulator.
 
     # Signed shift - preserve sign bits.
-    elseif op == :ACCSH
+    elseif op == ACCSH
         if src1_value == 0
             accumulator >>= 1
         elseif src1_value == 1
@@ -1080,7 +1079,7 @@ function stage4567_multiply(stage, accumulator)
         end
 
     # Unsigned shift. Use the ">>>" operator.
-    elseif op == :ACCSHU
+    elseif op == ACCSHU
         if src1_value == 0
             accumulator >>>= 1
         elseif src1_value == 1
@@ -1116,14 +1115,14 @@ function pipeline_stage8(core::AsapCore, stall)
 
     # Select stage 8 for write back if is is not a NOP, it's a MAC operation,
     # and it's destination is not ":null"
-    if stage7.instruction.op != :NOP &&
-        sym(stage7.instruction.dest) != :null &&
+    if stage7.instruction.op != NOP &&
+        sym(stage7.instruction.dest) != NULL &&
         stage7.instruction.optype == MAC_TYPE
 
         writeback!(core, stage7)
 
-    elseif stage5.instruction.op != :NOP &&
-            sym(stage5.instruction.dest) != :null &&
+    elseif stage5.instruction.op != NOP &&
+            sym(stage5.instruction.dest) != NULL &&
             stage5.instruction.optype != MAC_TYPE
 
         writeback!(core, stage5)
@@ -1141,37 +1140,37 @@ function writeback!(core::AsapCore, stage::PipelineEntry)
     result      = stage.result
 
     # Writeback to DMEM
-    if dest == :dmem
+    if dest == DMEM
         # For now, only handle write to DMEM
         @assert stage.instruction.sw
         core.dmem[index + 1] = stage.result
 
     # Write to hardware pointers.
-    elseif dest == :set_pointer 
+    elseif dest == SET_POINTER 
         # Write to the pointer in question.
         core.pointers[index + 1] = result
 
     # Configure AG Start and Stop
-    elseif dest == :ag_start
+    elseif dest == AG_START
         # Get the start and stop values.
         start = unsigned(result & 0xFF)
         stop  = unsigned((result >> 8) & 0xFF)
         set!(core.address_generators[index + 1], start, stop)
 
     # Configure AG Stride
-    elseif dest == :ag_stride
+    elseif dest == AG_STRIDE
         set_stride!(core.address_generators[index + 1], result)
 
     # Set CX Mask
-    elseif dest == :cxmask
+    elseif dest == CXMASK
         set!(core.condexec[index + 1], result)
 
     # Set OBUF Mask
-    elseif dest == :obuf_mask
+    elseif dest == OBUF_MASK
         setobufmask!(core, result) 
 
     # Write to an output buffer
-    elseif dest == :output
+    elseif dest == OUTPUT
         write(core.outputs[index + 1], result)
 
     end

@@ -116,7 +116,7 @@ struct PipelineEntry
     old_repeat_count   :: Int64# = 0
 end
 
-PipelineEntry(instruction = NOP()) = PipelineEntry(instruction,0,0,0,0,0,0)
+PipelineEntry(instruction = InstNOP()) = PipelineEntry(instruction,0,0,0,0,0,0)
 
 # Convenience types for changing fields of the PipelineEntry immutable
 # struct.
@@ -373,11 +373,11 @@ function stall_fifo_check(core::AsapCore) :: StallReason
     stage3 = core.pipeline.stage3
 
     # Early termination of stage 3 is a NOP - NOPs can't stall.
-    stage3.instruction.op == :NOP && (return NoStall)
+    stage3.instruction.op == NOP && (return NoStall)
 
     # If this instruction is a STALL instruction, pass its mask is found in
     # the src1_value field
-    if stage3.instruction.op == :STALL
+    if stage3.instruction.op == STALL
         return stall_check_stall_op(core, stage3.src1_value)        
 
     # Otherwise, do a normal stall check.
@@ -415,18 +415,18 @@ function stall_check_stall_op(core::AsapCore, mask)
     # really think of a more elegant way to do this.
 
     # --- Check inputs ---
-    if mask & (1 << 0) != 0
+    if isbitset(mask, 0)
         # Note: Converting from index 0 to index 1
         stall_check_ibuf(core, 1, default) != default && return NoStall
     end
 
-    if mask & (1 << 1) != 0
+    if isbitset(mask, 1)
         # Note: Converting from index 0 tio index 1
         stall_check_ibuf(core, 2, default) != default && return NoStall
     end
 
     # --- Check obuf mask ---
-    if mask & (1 << 4) != 0
+    if isbitset(mask, 4)
         # Iterate through the OBUF mask. If a flag is set, check that output.
         for (index, flag) in enumerate(core.obuf_mask)
             flag || continue
@@ -453,21 +453,21 @@ function stall_check_io(core::AsapCore, instruction::AsapInstruction)
     # --- Check inputs ---
 
     # NOTE: Must do conversion from index 0 to index 1
-    if sym(instruction.src1) == :ibuf || sym(instruction.src1) == :ibuf_next
+    if sym(instruction.src1) == IBUF || sym(instruction.src1) == IBUF_NEXT
         # The fifo to check should be in the src1_index field of the instruction.
         stall_check_ibuf(core, ind(instruction.src1) + 1, default) != default && return EmptyIbuf
     end
 
-    if sym(instruction.src2) == :ibuf || sym(instruction.src2) == :ibuf_next
+    if sym(instruction.src2) == IBUF || sym(instruction.src2) == IBUF_NEXT
         stall_check_ibuf(core, ind(instruction.src2) + 1, default) != default && return EmptyIbuf
     end
 
     # Check writes to an output
-    if sym(instruction.dest) == :output
+    if sym(instruction.dest) == OUTPUT
         stall_check_obuf(core, ind(instruction.dest) + 1, default) != default && return FullObuf
     # Check if doing a broadcast. Then, stall if any of the outputs selected
     # by the obuf_mask are stalling.
-    elseif sym(instruction.dest) == :obuf
+    elseif sym(instruction.dest) == OBUF
         for (index, flag) in enumerate(core.obuf_mask)
             flag || continue
             stall_check_obuf(core, index, default) != default && return FullObufMask

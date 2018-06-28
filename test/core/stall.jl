@@ -5,7 +5,7 @@
 # will have much better control over the state of the various fifos for
 # testing.
 @testset "Testing Stall Logic" begin
-    TestFifo = AsapSim.TestFifo
+    EmptyFullFifo = AsapSim.EmptyFullFifo
 
     num_outputs = 8
 
@@ -25,41 +25,41 @@
     # right now because all EmptyFullFifo are neither empty nor full.
     core.obuf_mask = trues(8)
 
-    @test AsapSim.stall_check_ibuf(core, 1, false) == false
-    @test AsapSim.stall_check_ibuf(core, 2, true) == false
+    @test AsapSim.stall_check_ibuf(core, 1, false) == AsapSim.NoStall
+    @test AsapSim.stall_check_ibuf(core, 2, true) == AsapSim.NoStall
 
-    @test AsapSim.stall_check_obuf(core, 1, false) == false
-    @test AsapSim.stall_check_obuf(core, 8, true) == false
+    @test AsapSim.stall_check_obuf(core, 1, false) == AsapSim.NoStall
+    @test AsapSim.stall_check_obuf(core, 8, true) == AsapSim.NoStall
 
     # Make a test instruction reading from both input fifos and writing to
     # an output fifo.
     test_instruction = AsapSim.AsapInstructionKeyword(
-        src1 = Loc(:ibuf, 0),
-        src2 = Loc(:ibuf_next, 1),
-        dest = Loc(:output, 0),
+        src1 = Loc(AsapSim.IBUF, 0),
+        src2 = Loc(AsapSim.IBUF_NEXT, 1),
+        dest = Loc(AsapSim.OUTPUT, 0),
     )
 
     # Since all FIFOs are ready to go, core should not stall.
-    @test AsapSim.stall_check_io(core, test_instruction) == false
+    @test AsapSim.stall_check_io(core, test_instruction) == AsapSim.NoStall
 
     # Start iterating over fifos, first setting inputs to "empty", then output
     # to "full". Make sure that stall logic fires correctly.
     core.fifos[1].empty = true
-    @test AsapSim.stall_check_io(core, test_instruction) == true
+    @test AsapSim.stall_check_io(core, test_instruction) == AsapSim.EmptyIbuf
 
     core.fifos[1].empty = false
     core.fifos[2].empty = true
-    @test AsapSim.stall_check_io(core, test_instruction) == true
+    @test AsapSim.stall_check_io(core, test_instruction) == AsapSim..EmptyIbuf
 
     core.fifos[2].empty = false
     core.outputs[1].full = true
-    @test AsapSim.stall_check_io(core, test_instruction) == true
+    @test AsapSim.stall_check_io(core, test_instruction) == AsapSim.FullObuf
 
     core.outputs[1].full = false
 
     # New test instruction testing the broadcast mechanism.
     test_instruction = AsapSim.AsapInstructionKeyword(
-        dest = :obuf
+        dest = AsapSim.OBUF
     )
 
     # Right now, all outputs are not full, so stall should not be triggered.
@@ -125,19 +125,19 @@
 
     # Stall should return "true" since all inputs are empty and all outputs
     # are full.
-    @test AsapSim.stall_check_stall_op(core, all_mask) == true
+    @test AsapSim.stall_check_stall_op(core, all_mask) == AsapSim.StallOp
 
     # Iterate over inputs, setting each non-empty. Test that the core should
     # not stall. Then do the same for the outputs.
     for fifo in core.fifos
         fifo.empty = false
-        @test AsapSim.stall_check_stall_op(core, all_mask) == false
+        @test AsapSim.stall_check_stall_op(core, all_mask) == AsapSim.NoStall
         fifo.empty = true
     end
 
     for fifo in values(core.outputs)
         fifo.full = false
-        @test AsapSim.stall_check_stall_op(core, all_mask) == false
+        @test AsapSim.stall_check_stall_op(core, all_mask) == AsapSim.NoStall
         fifo.full = true
     end
 
@@ -147,7 +147,7 @@
     end
 
     output_mask = 0b10000
-    @test AsapSim.stall_check_stall_op(core, output_mask) == true
+    @test AsapSim.stall_check_stall_op(core, output_mask) == AsapSim.StallOp
 
     # Do similar checking of the output mask as we did for the IO Stall above.
     core.obuf_mask .= true
@@ -159,7 +159,7 @@
     for i in 1:num_outputs
         core.outputs[i].full = false
         core.obuf_mask[i] = false
-        @test AsapSim.stall_check_stall_op(core, output_mask) == true
+        @test AsapSim.stall_check_stall_op(core, output_mask) == AsapSim.StallOp
 
         core.outputs[i].full = true
         core.obuf_mask[i] = true
@@ -174,7 +174,7 @@
     for i in 1:num_outputs
         core.outputs[i].full = true
         core.obuf_mask[i] = true
-        @test AsapSim.stall_check_stall_op(core, output_mask) == true
+        @test AsapSim.stall_check_stall_op(core, output_mask) == AsapSim.StallOp
 
         core.outputs[i].full = false
         core.obuf_mask[i] = false

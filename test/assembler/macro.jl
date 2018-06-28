@@ -1,6 +1,6 @@
 const test_int = 10
-const test_sym = :dmem
-const test_loc_array = [Loc(:dmem, 10)]
+const test_sym = AsapSim.DMEM
+const test_loc_array = [Loc(AsapSim.DMEM, 10)]
 
 @testset "Testing Random Misc. Stuff" begin
     quot = Meta.quot
@@ -12,20 +12,20 @@ const test_loc_array = [Loc(:dmem, 10)]
     @test kwargs == [:a => a, :b => b, :c => c]
 
     extract_loc = AsapSim.extract_loc
-    @test eval(extract_loc(1)) == Loc(:immediate, 1)
+    @test eval(extract_loc(1)) == Loc(AsapSim.IMMEDIATE, 1)
     # Test reserved reference
-    @test eval(extract_loc(:test_int)) == Loc(:immediate, 10)
-    @test eval(extract_loc(:test_sym)) == Loc(:dmem, -1)
+    @test eval(extract_loc(:test_int)) == Loc(AsapSim.IMMEDIATE, 10)
+    @test eval(extract_loc(:test_sym)) == Loc(AsapSim.DMEM, -1)
     # Test reserved reference
-    @test eval(extract_loc(:ibuf0)) == Loc(:ibuf, 0)
+    @test eval(extract_loc(:ibuf0)) == Loc(AsapSim.IBUF, 0)
 
     # --- Test expressions --- #
 
     # Test an expression that is reserved
-    @test eval(extract_loc(1 + 1 + 1)) == Loc(:immediate, 3)
-    @test eval(extract_loc(:(dmem[0]))) == Loc(:dmem, 0)
+    @test eval(extract_loc(1 + 1 + 1)) == Loc(AsapSim.IMMEDIATE, 3)
+    @test eval(extract_loc(:(dmem[0]))) == Loc(AsapSim.DMEM, 0)
     @test eval(extract_loc(:(test_loc_array[1]))) == test_loc_array[1]
-    @test eval(extract_loc(:(dmem[test_int]))) == Loc(:dmem, test_int)
+    @test eval(extract_loc(:(dmem[test_int]))) == Loc(AsapSim.DMEM, test_int)
 end
 
 
