@@ -23,9 +23,11 @@ include("assembler/macro.jl")
 
 # IO Handlers
 include("cores/io/io.jl")
-
+# 
 # Core Component Tests
-include("cores/core/stall.jl")
+# include("cores/core/stall.jl")
 include("cores/core/alu.jl")
 include("cores/core/programs.jl")
 include("cores/core/sort.jl")
+
+include("sim/snakesort.jl")

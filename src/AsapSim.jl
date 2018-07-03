@@ -3,6 +3,7 @@ module AsapSim
 # Use this to provide default values to a bunch of fields of structs.
 using Parameters
 using MacroTools
+using DES
 import AutoAligns
 
 export  @asap4asm,
@@ -36,6 +37,8 @@ include("cores/core/pipeline.jl")
 include("cores/core/show.jl")
 
 include("cores/io/io.jl")
+
+include("sim/sim.jl")
 
 
 end # module

@@ -105,7 +105,7 @@ end
 # next call to "update". So, have pipeline_stage0 return a struct with the
 # next state for items in the core. This can then be updated later to mutate
 # "core" without those changes being visible to other pipestages this cycle.
-struct Stage0NextState
+struct Stage0NextState 
     # Next state of the program counter.
     pc :: Int
     # Hardware looper
@@ -164,7 +164,7 @@ function pipeline_stage0(core::AsapCore, stall::Bool, mispredict)
     # Check if stage 3 is a RPT instruction. If so, grab the value of the repeat
     # counter and store it.
     elseif stage3.instruction.op == RPT
-        repeat_count_next = stage3.src1_value
+        repeat_count_next = Int(stage3.src1_value)
 
     # Check if PC is equal to the current repeat end block and there are pending
     # repeats. If so, decrement the repeat counter.
@@ -195,7 +195,7 @@ function pipeline_stage0(core::AsapCore, stall::Bool, mispredict)
     # If explicitly writing to return_address in Stage 5
     elseif stage4.instruction.dest == RET
         # TODO: Do a bounds check to make sure this stays in bounds.
-        return_address_next = stage4.result
+        return_address_next = Int(stage4.result)
 
     # Check if rolling back a non-jump instruction
     elseif mispredict && !stage3.instruction.jump
@@ -223,7 +223,7 @@ function pipeline_stage0(core::AsapCore, stall::Bool, mispredict)
 
         # Otherwise, go to its target.
         else
-            pc_next = branch_target(stage3.instruction)
+            pc_next = Int(branch_target(stage3.instruction))
         end
 
     # Do nothing if stalling this stage.
@@ -235,7 +235,7 @@ function pipeline_stage0(core::AsapCore, stall::Bool, mispredict)
         if stage1.instruction.isreturn
             pc_next = core.return_address
         else
-            pc_next = branch_target(stage1.instruction)
+            pc_next = Int(branch_target(stage1.instruction))
         end
     else
         pc_next = next_pc_unbranched

@@ -521,6 +521,17 @@ end
     return :(T($(args...)))
 end
 
+@generated function set!(a::T, b::U) where U <: Mutator{T} where T
+    # Get the fields of "b" that are also fields of "a"
+    a_fields = fieldnames(T)
+    b_fields = fieldnames(U)
+
+    mutated_fields = [f for f in b_fields if f in a_fields]
+
+    args = [:(a.$f = b.$f;) for f in mutated_fields]
+    return :($(args...))
+end
+
 
 
 # Methods on instructions - Since some values may be stored in some 

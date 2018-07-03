@@ -172,7 +172,7 @@ AsapPipeline() = AsapPipeline(
     #
     # Note that if interpreting this as PS ... a default value of 1 does not
     # really make a whole lot of sense.
-    clock_period ::Int64 = 1
+    clockperiod ::Int64 = 1
 
     # --- Program --- #
 
@@ -190,7 +190,7 @@ AsapPipeline() = AsapPipeline(
     repeat_end    :: Int64 = 0
 
     # Hardware return address buffer.
-    return_address :: Int16 = 0
+    return_address :: Int64 = 0
 
     # Number of pending NOPs to inser in stage 3 of the pipeline.
     # This is set by the options in the assembler.
@@ -259,6 +259,8 @@ AsapPipeline() = AsapPipeline(
     # -------- #
     pipeline::AsapPipeline = AsapPipeline()
 end
+
+clockperiod(core::AsapCore) = core.clockperiod
 
 function setobufmask!(core, mask)
     for index in 1:length(core.obuf_mask)
@@ -480,7 +482,7 @@ end
 
 # Break out the various stall checks into a bunch of little functions.
 
-function stall_check_ibuf(core, index, default::Bool) :: Bool
+@inline function stall_check_ibuf(core, index, default) :: Bool
     # If the default value is to stall, return false if the given fifo is
     # not empty to go against the stall.
     if default == true && isreadready(core.fifos[index]) 
@@ -497,7 +499,7 @@ function stall_check_ibuf(core, index, default::Bool) :: Bool
     end
 end
 
-function stall_check_obuf(core, index, default :: Bool) :: Bool
+@inline function stall_check_obuf(core, index, default :: Bool) :: Bool
     # Logic is similar to the ibuf check, but looks for full fifos instead of
     # empty fifos.
     if default == true && iswriteready(core.outputs[index])
