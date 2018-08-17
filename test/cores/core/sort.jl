@@ -50,7 +50,7 @@ end
     # input -> sort -> sort -> sort -> sort -> output
     #
     # This will test all of the sort variations.
-    srand(2)
+    Random.seed!(2)
 
     num_records = 8
     records = [TestPrograms.makerecord(i, zerofirst = true) for i in 1:num_records]

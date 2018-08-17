@@ -160,6 +160,66 @@ AsapPipeline() = AsapPipeline(
     PipelineEntry(),
 )
 
+mutable struct SmallAssociative{K,V}
+    items::Vector{Pair{K,V}}
+end
+SmallAssociative{K,V}() where {K,V} = SmallAssociative(Vector{Pair{K,V}}())
+Base.length(s::SmallAssociative) = length(s.items)
+
+function Base.getindex(s::SmallAssociative{K,V}, key :: K) where {K,V}
+    # Iterate through the wrapped container - try to find the given key.
+    for (k, v) in s.items
+        if k == key
+            return v
+        end
+    end
+    throw(KeyError(key))
+end
+
+function Base.setindex!(s::SmallAssociative, value, key)
+    # Check to see if this key already exists
+    foundkey = false
+    for (i, (k, v)) in enumerate(s.items)
+        if k == key
+            s.items[i] = value
+            foundkey = true
+            break
+        end
+    end
+
+    # If key was not found, make a new entry
+    if !foundkey
+        push!(s.items, key => value)
+    end
+    return nothing
+end
+
+# Iterator protocol
+function Base.iterate(s::SmallAssociative, state = 1)  
+    state > length(s.items) ? nothing : (s.items[state], state + 1)
+end
+
+# Key and Value iterators
+struct SmallKeyIterator{K,V}
+    s :: SmallAssociative{K,V}
+end
+
+Base.keys(s::SmallAssociative) = SmallKeyIterator(s)
+
+function Base.iterate(i::SmallKeyIterator, state = 1)
+    state > length(i.s.items) ? nothing : (first(i.s.items[state]), state + 1)
+end
+
+struct SmallValueIterator{K,V}
+    s :: SmallAssociative{K,V}
+end
+
+Base.values(s::SmallAssociative) = SmallValueIterator(s)
+function Base.iterate(i::SmallValueIterator, state = 1)
+    state > length(i.s.items) ? nothing : (last(i.s.items[state]), state + 1)
+end
+
+
 # Basic AsapCore. Parameterize based on
 #
 # 1. The type of FIFO - allows for injection of TestFifos to help with tests
@@ -182,7 +242,7 @@ AsapPipeline() = AsapPipeline(
     # Note on Program Counter (pc) - In actual hardware, it is base 0 ...
     # because hardware is base 0. However, Julia is base 1, so we'll have to
     # keep that in mind.
-    pc                  :: Int64 = 0
+    pc :: Int64 = 0
 
     # Hardware registers holding information about repeat values.
     repeat_count  :: Int64 = 0
@@ -215,7 +275,8 @@ AsapPipeline() = AsapPipeline(
     # NOTE: In Julia 0.7+, small unions are faster than in 0.6+, so it may be
     # possible to convert this to a Union{Void,DualClockFifo{Int16}} without
     # incurring any nasty runtime penalties.
-    outputs::Dict{Int,F} = Dict{Int,DualClockFifo{Int16}}()
+    #outputs::Dict{Int,F} = Dict{Int,DualClockFifo{Int16}}()
+    outputs :: SmallAssociative{Int,F} = SmallAssociative{Int,DualClockFifo{Int16}}()
 
     # Flags
     aluflags :: ALUFlags = ALUFlags()
@@ -371,11 +432,11 @@ Return `true` if the core should stall, `false` otherwise. A core will stall if:
     empty or any written-to output is full.
 """
 function stall_fifo_check(core::AsapCore) :: StallReason
+    # Early termination of stage 3 is a NOP - NOPs can't stall.
+    core.pipeline.stage3.instruction.op == NOP && (return NoStall)
+
     # Get the pipeline stage 4 instruction.
     stage3 = core.pipeline.stage3
-
-    # Early termination of stage 3 is a NOP - NOPs can't stall.
-    stage3.instruction.op == NOP && (return NoStall)
 
     # If this instruction is a STALL instruction, pass its mask is found in
     # the src1_value field
@@ -457,22 +518,22 @@ function stall_check_io(core::AsapCore, instruction::AsapInstruction)
     # NOTE: Must do conversion from index 0 to index 1
     if sym(instruction.src1) == IBUF || sym(instruction.src1) == IBUF_NEXT
         # The fifo to check should be in the src1_index field of the instruction.
-        stall_check_ibuf(core, ind(instruction.src1) + 1, default) != default && return EmptyIbuf
+        stall_check_ibuf(core.fifos[ind(instruction.src1) + 1], default) != default && return EmptyIbuf
     end
 
     if sym(instruction.src2) == IBUF || sym(instruction.src2) == IBUF_NEXT
-        stall_check_ibuf(core, ind(instruction.src2) + 1, default) != default && return EmptyIbuf
+        stall_check_ibuf(core.fifos[ind(instruction.src2) + 1], default) != default && return EmptyIbuf
     end
 
     # Check writes to an output
     if sym(instruction.dest) == OUTPUT
-        stall_check_obuf(core, ind(instruction.dest) + 1, default) != default && return FullObuf
+        stall_check_obuf(core.outputs[ind(instruction.dest) + 1], default) != default && return FullObuf
     # Check if doing a broadcast. Then, stall if any of the outputs selected
     # by the obuf_mask are stalling.
     elseif sym(instruction.dest) == OBUF
         for (index, flag) in enumerate(core.obuf_mask)
             flag || continue
-            stall_check_obuf(core, index, default) != default && return FullObufMask
+            stall_check_obuf(core.outputs[index], default) != default && return FullObufMask
         end
     end
 
@@ -482,15 +543,15 @@ end
 
 # Break out the various stall checks into a bunch of little functions.
 
-@inline function stall_check_ibuf(core, index, default) :: Bool
+@inline function stall_check_ibuf(fifo, default) :: Bool
     # If the default value is to stall, return false if the given fifo is
     # not empty to go against the stall.
-    if default == true && isreadready(core.fifos[index]) 
+    if default == true && isreadready(fifo) 
         return false
 
     # Otherwise, if the default is not to stall, return "true" if the fifo is
     # empty to indicate the core should stall
-    elseif default == false && !isreadready(core.fifos[index]) 
+    elseif default == false && !isreadready(fifo) 
         return true
 
     # If the above conditions are not met, just return the default.
@@ -499,12 +560,12 @@ end
     end
 end
 
-@inline function stall_check_obuf(core, index, default :: Bool) :: Bool
+@inline function stall_check_obuf(fifo, default :: Bool) :: Bool
     # Logic is similar to the ibuf check, but looks for full fifos instead of
     # empty fifos.
-    if default == true && iswriteready(core.outputs[index])
+    if default == true && iswriteready(fifo)
         return false
-    elseif default == false && !iswriteready(core.outputs[index])
+    elseif default == false && !iswriteready(fifo)
         return true
     else
         return default

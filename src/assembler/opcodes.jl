@@ -15,6 +15,8 @@ DISCLAIMER: I did not benchmark an entire system with the Symbol based
 implementation because that was not functional at the time. Rather, I switched
 over to the current implementation before the whole system was functional.
 
+Also, this may be fixed in Julia 0.7/1.0
+
 --------------------------------------------------------------------------------
 
 The current implementation still uses some of that symbol based ideas, but uses
@@ -281,7 +283,7 @@ end
 # Or store other information such as immediate values.
 struct Loc
     sym::SrcDest
-    ind::Int
+    ind::Int32
 end
 
 Loc() = Loc(NULL, -1)
@@ -480,19 +482,19 @@ end
 
 abstract type Mutator{T} end
 
-immutable SrcDestCollection <: Mutator{AsapInstruction}
+struct SrcDestCollection <: Mutator{AsapInstruction}
     dest        :: Loc
     src1        :: Loc
     src2        :: Loc
 end
 
-immutable InstSrc1 <: Mutator{AsapInstruction}
+struct InstSrc1 <: Mutator{AsapInstruction}
     src1 :: Loc
 end
-immutable InstSrc2 <: Mutator{AsapInstruction}
+struct InstSrc2 <: Mutator{AsapInstruction}
     src2 :: Loc
 end
-immutable InstDest <: Mutator{AsapInstruction}
+struct InstDest <: Mutator{AsapInstruction}
     dest :: Loc
 end
 
@@ -513,9 +515,9 @@ end
     # by iterating ove inst_fields. If a given field is in the SrcDestCollection,
     # use that instead.
     args = map(a_fields) do f
-        i = findfirst(b_fields, f)
+        i = findfirst(isequal(f), b_fields)
         # If "i" is in the operands fields, return that field.
-        return i > 0 ? :(b.$f) : :(a.$f)
+        return i == nothing ? :(a.$f) : :(b.$f)
     end
 
     return :(T($(args...)))
@@ -529,7 +531,7 @@ end
     mutated_fields = [f for f in b_fields if f in a_fields]
 
     args = [:(a.$f = b.$f;) for f in mutated_fields]
-    return :($(args...))
+    return :($(args...,))
 end
 
 

@@ -123,7 +123,7 @@ function makelabeldict(labels)
     d = Dict{Symbol,Int}()
     for (index, label) in enumerate(labels)
         # Skip non-set labels
-        label isa Void && continue
+        label isa Nothing && continue
 
         # Check if a symbol is already in the dictionary. If so, do nothing.
         # Otherwise, mark this index.

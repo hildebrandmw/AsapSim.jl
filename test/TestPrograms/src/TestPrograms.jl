@@ -20,6 +20,7 @@ module TestPrograms
     # Simple programs
     include("Simple.jl")
     include("Sort.jl")
+    include("Temp.jl")
 
     ####################
     # Helper Functions #
@@ -111,7 +112,8 @@ module TestPrograms
         core = AsapCore(;
             program = program,
             fifos = [AsapSim.TestFifo{Int16}(),AsapSim.TestFifo{Int16}()],
-            outputs = Dict{Int,AsapSim.TestFifo{Int16}}(),
+            outputs = AsapSim.SmallAssociative{Int,AsapSim.TestFifo{Int16}}(),
+            #outputs = Dict{Int,AsapSim.TestFifo{Int16}}(),
         )
 
 

@@ -3,29 +3,31 @@ Create wrappers for cores that will interact with DES to create the simulation
 environment.
 =#
 mutable struct SimWrapper{T}
-    core :: T
-    callback :: Callback
+    obj :: T
+    handle :: Int
     visits :: Int
 end
 
-SimWrapper(core :: T) where T = SimWrapper(core, Callback(), 0)
+SimWrapper(obj) = SimWrapper(obj, 0, 0)
 
-core(s::SimWrapper) = s.core
-getcallback(s::SimWrapper) = s.callback
-setcallback!(s::SimWrapper, c::Callback) = s.callback = c
+isregistered(s::SimWrapper) = gethandle(s) > 0
+unwrap(s::SimWrapper) = s.obj
+gethandle(s::SimWrapper) = s.handle
+sethandle!(s::SimWrapper, h::Int) = s.handle = h
 
 function update!(sim, wrapper :: SimWrapper)
-    update!(core(wrapper))
-    schedule!(sim, getcallback(wrapper), clockperiod(core(wrapper)))
+    update!(unwrap(wrapper))
+    schedule!(sim, gethandle(wrapper), clockperiod(unwrap(wrapper)))
     wrapper.visits += 1
     return nothing
 end
 
-function wrap(core :: T) where T
-    wrapper = SimWrapper(core)
-    setcallback!(wrapper, Callback(sim -> update!(sim, wrapper)))
+function wrap!(sim, obj :: T) where T
+    wrapper = SimWrapper(obj)
+    handle = register!(sim, sim -> update!(sim, wrapper))
+    sethandle!(wrapper, handle) 
 
     return wrapper
 end
 
-DES.schedule!(sim::Simulation, wrapper::SimWrapper) = schedule!(sim, getcallback(wrapper), 0)
+LightDES.schedule!(sim::Simulation, wrapper::SimWrapper) = schedule!(sim, gethandle(wrapper), 0)

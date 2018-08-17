@@ -3,7 +3,7 @@ module AsapSim
 # Use this to provide default values to a bunch of fields of structs.
 using Parameters
 using MacroTools
-using DES
+using LightDES
 import AutoAligns
 
 export  @asap4asm,

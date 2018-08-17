@@ -21,8 +21,8 @@ symbol_lc(x::Symbol) = Symbol(lowercase(string(x)))
 # some instructions before separating the instructions and labels.
 mutable struct InstructionLabelTarget
     instruction   :: AsapInstruction
-    label         :: Union{Symbol,Void}
-    branch_target :: Union{Symbol,Void}
+    label         :: Union{Symbol,Nothing}
+    branch_target :: Union{Symbol,Nothing}
 end
 
 function convertcode(expr::Expr)
@@ -68,7 +68,7 @@ end
 # complicated thing given by "gensym" so we don't have to worry about it 
 # clobbering anything in the function.
 function startvector!(function_body :: Expr, program_vector_sym)
-    unshift!(function_body.args, :($program_vector_sym = InstructionLabelTarget[]))
+    pushfirst!(function_body.args, :($program_vector_sym = InstructionLabelTarget[]))
 end
 
 # Container for holding kwargs to give to the Keyword constructor of 
@@ -80,7 +80,7 @@ end
 # container.
 mutable struct KwargHolder
     kwargs          :: Vector{Pair{Symbol,Any}}
-    branch_target   :: Union{Symbol,Void}
+    branch_target   :: Union{Symbol,Nothing}
 end
 KwargHolder() = KwargHolder(Pair{Symbol,Any}[], nothing)
 
@@ -92,7 +92,7 @@ function replace_instructions(function_body :: Expr, program_vector_sym)
     #
     # When assembling, the label will be resolved to the first instruction that
     # has that label.
-    label :: Union{Symbol,Void} = nothing
+    label :: Union{Symbol,Nothing} = nothing
 
     # Walk through the expression - replacing pseudo-assembly with parsed
     # instruction types.
@@ -176,7 +176,7 @@ function getkwargs(op, args)
 
         # Remove the destination argument from the vector to avoid using it
         # more than once.
-        shift!(args)
+        popfirst!(args)
 
         # (TODO) - this is temporary. Need to really first perform a check to
         # see if the caller is providing branch options. Otherwise, need to be
@@ -193,14 +193,14 @@ function getkwargs(op, args)
         if def.dest
             dest = extract_loc(first(args))
             @pairpush! holder.kwargs dest
-            shift!(args)
+            popfirst!(args)
         end
 
         # Parse out src1 and src2
         if def.src1
             src1 = extract_loc(first(args))
             @pairpush! holder.kwargs src1
-            shift!(args)
+            popfirst!(args)
         end
         if def.src2
             src2 = extract_loc(first(args))
@@ -298,7 +298,7 @@ function make_branch_mask(args)
     mask = 0
 
     for (bit, arg) in enumerate(possible_args)
-        indices = find(x -> x == arg, args)
+        indices = findall(x -> x == arg, args)
         # Check if this argument exists. If so, set the corresponding bit of the
         # mask.
         if length(indices) > 0

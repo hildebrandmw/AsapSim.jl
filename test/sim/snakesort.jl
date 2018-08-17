@@ -10,7 +10,8 @@
     failing_permutations = []
     snakesort = TestPrograms.snakesort
 
-    for _ in 1:1
+    for _ in 1:2
+
         # Generate a random permutatation for the records.
         perm = randperm(num_records)
 
@@ -58,16 +59,17 @@
 
         # Create a vector of SimWrappers for all of these cores.
         println("Wrapping Simulation")
-        wrappers = [AsapSim.wrap(i) for i in core_vector]
         simtime = 500000 * num_records
+        sim = LightDES.Simulation(simtime)
+
+        wrappers = [AsapSim.wrap!(sim, i) for i in core_vector]
         println("Starting Simulation")
-        sim = DES.Simulation(simtime)
 
         for wrapper in wrappers
             AsapSim.schedule!(sim, wrapper)
         end
 
-        @profile @time run(sim)
+        @time @profile run(sim)
         println(now(sim))
 
         open("profile.txt", "w") do f
@@ -94,7 +96,6 @@
         #         println("Num Writes: ", v.num_writes)
         #     end
         #     println()
-
         # end
 
         passed = output_handler.data == expected_results
