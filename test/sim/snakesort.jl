@@ -69,7 +69,10 @@
             AsapSim.schedule!(sim, wrapper)
         end
 
-        @time @profile run(sim)
+        # Clear allocation data for better memory analysis.
+        Profile.clear_malloc_data()
+        Profile.clear()
+        @time run(sim)
         println(now(sim))
 
         open("profile.txt", "w") do f

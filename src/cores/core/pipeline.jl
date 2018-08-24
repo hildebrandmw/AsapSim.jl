@@ -6,6 +6,8 @@ Implementation of the KC2 pipeline.
 # instructions. This is a helpful function to avoid writing out a lot of this
 # manually.
 @inline isbitset(x::Integer, i) = (x & (1 << i)) != 0
+@inline setbit(x::Integer, i) = x | (1 << i)
+isbitset(x::Integer, ::Val{N}) where N = (x & (1 << N)) != 0
 
 # Basically clock the core.
 function update!(core::AsapCore)
@@ -535,9 +537,9 @@ function asap_add(x::Int32, y::Int32)
     # Julia default to 2's complement arithmetic, so this will return the 
     # correct result even if arguments are supposed to be unsigned.
     result_32 = x + y
-    result = signed(UInt16(result_32 & 0xFFFF))
-    cout = isbitset(result, 17)
-    overflow = cout ⊻ isbitset(result, 16)
+    result = trunc_int(Int16, result_32)
+    cout = isbitset(result_32, 17)
+    overflow = cout ⊻ isbitset(result_32, 16)
 
     return result, cout, overflow
 end
@@ -557,21 +559,6 @@ end
 function asap_sub(::Type{Signed}, x::Int16, y::Int16, c::Bool = false)
     asap_add(Int32(x), Int32(-y) - Int32(c))
 end
-
-#function asap_add(::Type{T}, x::Int16, y::Int16) where T
-#    # Extend inputs to 32 bits - allows checking of bit 17 for carry out that
-#    # correctly handles signed and unsigned cases.
-#    
-#    # Check carry out
-#    cout = (typemax(UInt16) - unsigned(x)) < unsigned(y)
-#    result = x + y
-#    overflow = (x > 0 && y > 0 && result < 0) || (x < 0 && y < 0 && result > 0)
-#    # Return sum and carry-out. Since all arithmetic in Julia is in 2's
-#    # complement, we don't need to worry about converting "x" and "y" to
-#    # unsigned because we'll get the same end result.
-#    return x + y, cout, overflow
-#end
-#asap_add(x::Int16, y::Int16, cin::Int16) = asap_add(x, y + cin)
 
 function stage4_alu(
         op :: AsapOpcode,
@@ -600,7 +587,6 @@ function stage4_alu(
     #
     # Addition and subtraction logic, which will share carry detection and
     # saturation at the end, and other more complicated logic.
-    result::Int16 = 0
 
     # Unsigned Addition
     if op == ADDSU || op == ADDU
@@ -641,63 +627,63 @@ function stage4_alu(
     elseif op == MOVCX1
         result = cxflags[2].flag ? src2 : src2
 
-    # Reduction operators.
-    elseif op == ANDWORD
-        result = (src1 == Int16(0xFFFF)) ? Int16(1) : Int16(0)
-    elseif op == ORWORD
-        result = (src1 == 0) ? Int16(0) : Int16(1)
-    elseif op == XORWORD
-        result = isodd(count_ones(src1)) ? Int16(1) : Int16(0)
+    # # Reduction operators.
+    # elseif op == ANDWORD
+    #     result = (src1 == Int16(0xFFFF)) ? Int16(1) : Int16(0)
+    # elseif op == ORWORD
+    #     result = (src1 == 0) ? Int16(0) : Int16(1)
+    # elseif op == XORWORD
+    #     result = isodd(count_ones(src1)) ? Int16(1) : Int16(0)
 
-    # Special operators
-    elseif op == BTRV
-        error("BTRV not implemented yet")
-    elseif op == LSD
-        result = (src1 < 0) ? count_ones(src1) - 1 : count_zeros(src1) - 1
-    elseif op == LSDU
-        result = count_zeros(src1)
+    # # Special operators
+    # elseif op == BTRV
+    #     error("BTRV not implemented yet")
+    # elseif op == LSD
+    #     result = ((src1 < 0) ? count_ones(src1) - 1 : count_zeros(src1) - 1) |> Int16
+    # elseif op == LSDU
+    #     result = count_zeros(src1) |> Int16
 
-    # Shift operations
-    elseif op == SHL
-        # Since we store numbers as signed, must check if src2 is negative.
-        result = (src2 >= 16 || src2 < 0) ? 0 : Int(src1) << src2
-        carry_next = (result & 0x10000) != 0
-        result = Int16(result & 0xFFFF)
-    elseif op == SHR
-        # Shift left 1 so we can capture the carry bit.
-        result = Int(unsigned(src1)) << 1
-        result = (src2 > 16 || src2 < 0) ? 0 : result >> src2
-        # Carry the low bit
-        carry_next = (result & 1) != 0
-        result = Int16((result >> 1) & 0xFFFF)
-    elseif op == SRA
-        result = Int(src1) << 1
-        result = (src2 > 16 || src2 < 0) ? 0 : result >> src2
-        carry_next = (result & 1) != 0
-        result = Int16((result >> 1) & 0xFFFF)
+    # # Shift operations
+    # elseif op == SHL
+    #     # Since we store numbers as signed, must check if src2 is negative.
+    #     temp = (src2 >= 16 || src2 < 0) ? 0 : Int(src1) << src2
+    #     carry_next = (temp & 0x10000) != 0
+    #     result = trunc_int(Int16, result)
+    # elseif op == SHR
+    #     # Shift left 1 so we can capture the carry bit.
+    #     temp1 = Int(unsigned(src1)) << 1
+    #     temp2 = (src2 > 16 || src2 < 0) ? 0 : temp1 >> src2
+    #     # Carry the low bit
+    #     carry_next = (temp2 & 1) != 0
+    #     result = trunc_int(Int16, temp2 >> 1)
+    # elseif op == SRA
+    #     temp1 = Int(src1) << 1
+    #     temp2 = (src2 > 16 || src2 < 0) ? 0 : temp1 >> src2
+    #     carry_next = (result & 1) != 0
+    #     result = trunc_int(Int16, temp2 >> 1)
 
-    # Shift left and carry
-    elseif op == SHLC
-        # Insert carry on the right - preshift by 1
-        result = Int(src1) << 1 | Int(flags.carry)
-        result = (src2 >= 16 || src2 < 0) ? 0 : result << src2
-        # Because of the pre-shift, the new carry is at bit 17
-        carry_next = (result & 0x20000) != 0
-        result = Int16((result >> 1) & 0xFFFF)
+    # # Shift left and carry
+    # elseif op == SHLC
+    #     # Insert carry on the right - preshift by 1
+    #     temp1 = Int(src1) << 1 | Int(flags.carry)
+    #     temp2 = (src2 >= 16 || src2 < 0) ? 0 : temp1 << src2
+    #     # Because of the pre-shift, the new carry is at bit 17
+    #     carry_next = (temp2 & 0x20000) != 0
+    #     result = trunc_int(Int16, temp2 >> 1)
 
-    elseif op == SHRC # Shift right and carry
-        # Insert carry-in on the left.
-        # Make room for carry out on the right by left-shifting by 1
-        result = (Int(unsigned(src1)) | (Int(flags.carry) << 16)) << 1
-        result = (src2 > 16 || src2 < 0) ? 0 : result >> src2
-        carry_next = (result & 1) != 0
-        result = Int16((result >> 1) & 0xFFFF)
+    # elseif op == SHRC # Shift right and carry
+    #     # Insert carry-in on the left.
+    #     # Make room for carry out on the right by left-shifting by 1
+    #     temp1 = (Int(unsigned(src1)) | (Int(flags.carry) << 16)) << 1
+    #     temkp2 = (src2 > 16 || src2 < 0) ? 0 : temp1 >> src2
+    #     carry_next = (temp2 & 1) != 0
+    #     result = trunc_int(Int16, temp2 >> 1)
 
-    elseif op == SRAC
-        result = (Int(src1) | Int(flags.carry) << 16) << 1
-        result = (src2 > 16 || src2 < 0) ? 0 : result >> src2
-        carry_next = (result & 1) != 0
-        result = Int16((result >> 1) & 0xFFFF)
+    # elseif op == SRAC
+    #     temp1 = (Int(src1) | Int(flags.carry) << 16) << 1
+    #     temp2 = (src2 > 16 || src2 < 0) ? 0 : temp1 >> src2
+    #     carry_next = (temp2 & 1) != 0
+    #     result = trunc_int(Int16, temp2 >> 1)
 
     # Unrecognized instruction
     else
@@ -876,10 +862,9 @@ function saturate!(stage::PipelineEntry, aluflags::ALUFlags)
 end
 
 function setflag!(condexec::CondExec, core::AsapCore, stage)
-    # Create a bit-vector for the flags.
-    #
-    # Since there are 11 mask bits, set this to falses of lenght 11.
-    flags = falses(11)
+    # Use an integer to store flags.
+    numflags = 11
+    flags = zero(UInt16)
     mask = condexec.mask
 
     # The condexec mask bits are as follows:
@@ -904,7 +889,7 @@ function setflag!(condexec::CondExec, core::AsapCore, stage)
         for (index, bit) in enumerate(core.obuf_mask)
             bit || continue
             if isfull(core.outputs[index])
-                flags[8] = true
+                flags = setbit(flags, 8)
                 break
             end
         end
@@ -912,35 +897,47 @@ function setflag!(condexec::CondExec, core::AsapCore, stage)
 
     # Check IBUFS
     if isbitset(mask, 5)
-        flags[5] = isempty(core.fifo[2])
+        if isempty(core.fifo[2])
+            flags = setbit(flags, 5)
+        end
     end
     if isbitset(mask, 4)
-        flags[4] = isempty(core.fifo[1])
+        if isempty(core.fifo[1])
+            flags = setbit(flags, 4)
+        end
     end
 
     # Check ALU Flags.
     aluflags = core.aluflags
 
     if isbitset(mask, 3)
-        flags[3] = aluflags.overflow
+        if aluflags.overflow
+            flags = setbit(flags, 3)
+        end
     end
     if isbitset(mask, 2)
-        flags[2] = aluflags.carry
+        if aluflags.carry
+            flags = setbit(flags, 2)
+        end
     end
     if isbitset(mask, 1)
-        flags[1] = aluflags.zero
+        if aluflags.zero
+            flags = setbit(flags, 1)
+        end
     end
     if isbitset(mask, 0)
-        flags[0] = flags.negative
+        if aluflags.negative
+            flags = setbit(flags, 0)
+        end
     end
 
     # Perfrom the reduction and set the flag.
     if condexec.unary_op == :OR
-        condexec.flag = reduce(|, flags)
+        condexec.flag = count_ones(flags) > 0
     elseif condexec.unary_op == :AND
-        condexec.flag = reduce(&, flags)
+        condexec.flag = count_ones(flags) == numflags
     else
-        condexec.flag = reduce(⊻, flags)
+        condexec.flag = isodd(count_ones(flags))
     end
     return nothing
 end

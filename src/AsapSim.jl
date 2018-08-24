@@ -6,6 +6,8 @@ using MacroTools
 using LightDES
 import AutoAligns
 
+import Base.trunc_int
+
 export  @asap4asm,
         # AsapOpcode,
         # SrcDest,

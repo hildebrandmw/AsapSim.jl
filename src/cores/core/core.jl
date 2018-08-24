@@ -445,7 +445,8 @@ function stall_fifo_check(core::AsapCore) :: StallReason
 
     # Otherwise, do a normal stall check.
     else
-        return stall_check_io(core, stage3.instruction)
+        status = stall_check_io(core, stage3.instruction)
+        return status
     end
 end
 
