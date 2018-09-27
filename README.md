@@ -15,4 +15,4 @@ Asap 4 processors and as an excuse to play around with fun metaprogramming shena
 does not replace the C++ simulator used internally within the VCL and hence has been 
 abandoned in favor of working on more relevant projects.
 
-Still, there's some fun code written here, so I'm keeping it alive for the time beaing.
+Still, there's some fun code written here, so I'm keeping it alive for the time being.
