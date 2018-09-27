@@ -4,7 +4,6 @@ showprogram(core::AsapCore) = show(STDOUT, core.program, core.pc)
 function summarize(core::AsapCore)
     # Get the stall signals since these are evaluated on each clock cycle and
     # not stored in core state.
-    #stall_signals = stall_check(core)
 
     # Display various processor state.
     show_hwstate(core)
@@ -84,7 +83,7 @@ end
 ################################################################################
 
 function show_hwstate(core::AsapCore)
-    print_with_color(:white, "HW State\n"; bold = true)
+    printstyled("HW State\n"; bold = true, color = :white)
     println("PC: $(core.pc)")
 
     # Create an auto-align object for printing information horizontally.
@@ -129,9 +128,9 @@ function show_hwstate(core::AsapCore)
 
     # Print out branch mispredict
     if checkbranch(core)
-        print_with_color(:red, "Branch Mispredicted\n")
+        printstyled("Branch Mispredicted\n", color = :red)
     else
-        print_with_color(:green, "No Branch Mispredict\n")
+        printstyled("No Branch Mispredict\n", color = :green)
     end
 
     # Print out stall reason if the core is stalled.
@@ -143,7 +142,7 @@ function show_hwstate(core::AsapCore)
 end
 
 function show_condexec(core::AsapCore)
-    print_with_color(:white, "Conditional Execution\n", bold = true)
+    printstyled("Conditional Execution\n", bold = true, color = :white)
     for (index, condexec) in enumerate(core.condexec)
         println("CX$(index-1): $condexec")
     end
@@ -153,25 +152,25 @@ end
 
 # Show the status of the input and output fifos.
 function show_io(core::AsapCore)
-    print_with_color(:white, "Input Fifo Occupancy\n"; bold = true)
+    printstyled("Input Fifo Occupancy\n"; bold = true, color = :white)
     for (index, fifo) in enumerate(core.fifos)
         color = isreadready(fifo) ? :green : :red
-        print_with_color(color, "Fifo $(index -1): $(read_occupancy(fifo))\n")
+        printstyled("Fifo $(index -1): $(read_occupancy(fifo))\n", color = color)
     end
 
     println()
-    print_with_color(:white, "Output Fifo Occupancy\n"; bold = true)
+    printstyled("Output Fifo Occupancy\n"; bold = true, color = :white)
     for (k,v) in core.outputs
         println("Output $k: $(write_occupancy(v))")
     end
     # Declare boldly if no output fifos have been connected.
     if length(core.outputs) == 0
-        print_with_color(:red, "No Connected Outputs\n")
+        printstyled("No Connected Outputs\n", color = :red)
     end
 
     # --- Show the output mask --- #
     println()
-    print_with_color(:white, "OBUF Mask\n", bold = true)
+    printstyled("OBUF Mask\n", bold = true, color = :white)
 
     # Convert the obuf mask to a string
     obuf_mask_string = join([x ? "1" : "0" for x in core.obuf_mask])
@@ -195,20 +194,20 @@ function show_pipeline(core::AsapCore)
     stall_signals = stall_check(core)
     mispredict = checkbranch(core)
 
-    print_with_color(:white, "Pipeline\n"; bold = true)
+    printstyled("Pipeline\n"; bold = true, color = :white)
 
     # Show stages 0 and 1. For Stage 1, create a pipe stage for the current
     # value of the PC so we can se what's next.
     color = stall_signals.stall_01 ? (:red) : (:white)
 
     # Print stage 0
-    print_with_color(color, "Stage 0: No Instruction\n")
+    printstyled("Stage 0: No Instruction\n", color = color)
 
     # Run Stage 0 to get the next program counter.
     s0_nextstate = pipeline_stage0(core, stall_signals.stall_01, mispredict)
 
     # Create a instruction for stage 1. Make NOP if PC is out of bounds.
-    print_with_color(color, "Stage 1: $(core.pipeline.stage1)\n")
+    printstyled("Stage 1: $(core.pipeline.stage1)\n", color = color)
 
     # Select a color for Stage 2
     if stall_signals.stall_234
@@ -218,12 +217,12 @@ function show_pipeline(core::AsapCore)
     else
         color = :white
     end
-    print_with_color(color, "Stage 2: $(core.pipeline.stage2)\n")
+    printstyled("Stage 2: $(core.pipeline.stage2)\n")
 
     # Select a color for stages 3 and 4.
     color = stall_signals.stall_234 ? (:red) : (:white)
-    print_with_color(color, "Stage 3: $(core.pipeline.stage3)\n")
-    print_with_color(color, "Stage 4: $(core.pipeline.stage4)\n")
+    printstyled("Stage 3: $(core.pipeline.stage3)\n", color = color)
+    printstyled("Stage 4: $(core.pipeline.stage4)\n", color = color)
 
     # Print stage 5 with its myriad of colors.
     if stall_signals.nop_5
@@ -233,10 +232,10 @@ function show_pipeline(core::AsapCore)
     else
         color = :white
     end
-    print_with_color(color, "Stage 5: $(core.pipeline.stage5)\n")
+    printstyled(color, "Stage 5: $(core.pipeline.stage5)\n", color = color)
 
     # Default to Stalled and Unstalled.
     color = stall_signals.stall_5678  ? (:red) : (:white)
-    print_with_color(color, "Stage 6: $(core.pipeline.stage6)\n")
-    print_with_color(color, "Stage 7: $(core.pipeline.stage7)\n")
+    printstyled("Stage 6: $(core.pipeline.stage6)\n", color = color)
+    printstyled("Stage 7: $(core.pipeline.stage7)\n", color = color)
 end

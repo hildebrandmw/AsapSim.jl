@@ -4,30 +4,29 @@ environment.
 =#
 mutable struct SimWrapper{T}
     obj :: T
-    handle :: Int
+    callback :: Callback
     visits :: Int
 end
 
-SimWrapper(obj) = SimWrapper(obj, 0, 0)
+SimWrapper(obj) = SimWrapper(obj, Callback(), 0)
 
-isregistered(s::SimWrapper) = gethandle(s) > 0
 unwrap(s::SimWrapper) = s.obj
-gethandle(s::SimWrapper) = s.handle
-sethandle!(s::SimWrapper, h::Int) = s.handle = h
+callback(s::SimWrapper) = s.callback
+setcallback!(s::SimWrapper, cb) = s.callback = cb
 
 function update!(sim, wrapper :: SimWrapper)
     update!(unwrap(wrapper))
-    schedule!(sim, gethandle(wrapper), clockperiod(unwrap(wrapper)))
+    schedule!(sim, callback(wrapper), clockperiod(unwrap(wrapper)))
     wrapper.visits += 1
     return nothing
 end
 
 function wrap!(sim, obj :: T) where T
     wrapper = SimWrapper(obj)
-    handle = register!(sim, sim -> update!(sim, wrapper))
-    sethandle!(wrapper, handle) 
+    callback = Callback(sim -> update!(sim, wrapper))
+    setcallback!(wrapper, callback)
 
     return wrapper
 end
 
-LightDES.schedule!(sim::Simulation, wrapper::SimWrapper) = schedule!(sim, gethandle(wrapper), 0)
+LightDES.schedule!(sim::Simulation, wrapper::SimWrapper) = schedule!(sim, callback(wrapper), 0)
